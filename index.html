@@ -508,7 +508,21 @@
 
 const BACKEND_URL = "https://script.google.com/macros/s/AKfycbxiQimukMoSJZ9X75Yu0AjMbuGkQ5bqvLh2XWnSD0F4SZkJDoEW-DmfnxL2C2wkHhXY/exec"; // ← Apps Script 배포 URL
 
-const ADMIN_PASSWORD = "01067952455";
+// 기본 관리자 비밀번호 (관리자 대시보드 → 관리자 비밀번호 변경에서 바꿀 수 있음)
+const DEFAULT_ADMIN_PASSWORD = "hyele19780927!";
+const ADMIN_PW_KEY = "HYELE_ADMIN_PW_V1";
+
+// 현재 유효한 관리자 비밀번호를 반환 (localStorage 저장값 우선)
+function getAdminPassword() {
+  try {
+    const v = localStorage.getItem(ADMIN_PW_KEY);
+    if (v && String(v).trim()) return String(v);
+  } catch (e) {}
+  return DEFAULT_ADMIN_PASSWORD;
+}
+function setAdminPassword(newPw) {
+  try { localStorage.setItem(ADMIN_PW_KEY, String(newPw)); } catch (e) {}
+}
 
 // 부서별 평가자 정보 (비밀번호는 관리자 페이지에서 관리)
 const DEFAULT_EVALUATORS = {
@@ -545,11 +559,73 @@ const DEFAULT_EVALUATORS = {
   "경영지원부": {
     "1차": { name: "강유석", title: "부장", password: "NH9SCB" },
     "2차": { name: "김소윤", title: "상무", password: "DW3PCN" }
+  },
+  // 임원(3차·4차) — 부서 선택 시 "임원" 으로 표시
+  "임원": {
+    "3차-조규오": { name: "조규오", title: "부사장",   password: "KR3DQN" }, // 경영지원부 강유석 부장 전담
+    "3차-임웅걸": { name: "임웅걸", title: "부사장",   password: "IW5FHS" }, // 그 외 부장들 담당
+    "4차":        { name: "양정일", title: "대표이사", password: "YJ9PTM" }  // 부장 9명 + 이사 2명 전체
   }
 };
 
+// 3차/4차 평가자별 평가 대상 (부서, 이름)
+const EXEC_TARGETS = {
+  "3차-조규오": [
+    { dept: "경영지원부",   name: "강유석" },
+    { dept: "신재생영업부", name: "송지훈" }
+  ],
+  "3차-임웅걸": [
+    { dept: "자재관리부",   name: "전기훈" },
+    { dept: "부설연구소",   name: "조민웅" },
+    { dept: "부설연구소",   name: "정택기" },
+    { dept: "생산관리부",   name: "양정민" },
+    { dept: "품질보증부",   name: "유창근" },
+    { dept: "품질보증부",   name: "정영교" },
+    { dept: "품질보증부",   name: "최인태" },
+    { dept: "수배전설계부", name: "노영훈" },
+    { dept: "품질보증부",   name: "이병수" }
+  ],
+  "4차": [
+    { dept: "경영지원부",   name: "강유석" },
+    { dept: "자재관리부",   name: "전기훈" },
+    { dept: "신재생영업부", name: "송지훈" },
+    { dept: "부설연구소",   name: "조민웅" },
+    { dept: "부설연구소",   name: "정택기" },
+    { dept: "생산관리부",   name: "양정민" },
+    { dept: "품질보증부",   name: "유창근" },
+    { dept: "품질보증부",   name: "정영교" },
+    { dept: "품질보증부",   name: "최인태" },
+    { dept: "수배전설계부", name: "노영훈" },
+    { dept: "품질보증부",   name: "이병수" }
+  ]
+};
+
+// 3차/4차 평가 대상 집합 (부서|이름 키)
+const EXEC_KEY = e => `${e.dept}|${e.name}`;
+const EXEC_SET = (() => {
+  const s = new Set();
+  Object.values(EXEC_TARGETS).forEach(arr => arr.forEach(t => s.add(`${t.dept}|${t.name}`)));
+  return s;
+})();
+function isExecEmp(emp) { return EXEC_SET.has(EXEC_KEY(emp)); }
+function isExecRound(round) {
+  return round === "4차" || (typeof round === "string" && round.startsWith("3차"));
+}
+
 // 직원 명단 (rankCategory: '과장이상' | '대리이하')
+// 부장·이사는 3차/4차 임원 평가 대상 (1차/2차 에서는 평가 대상 아님)
 const EMPLOYEES = [
+  // --- 임원 평가 대상 (부장·이사) ---
+  { dept: "경영지원부",   name: "강유석", rank: "부장", rankCategory: "과장이상" },
+  { dept: "자재관리부",   name: "전기훈", rank: "부장", rankCategory: "과장이상" },
+  { dept: "신재생영업부", name: "송지훈", rank: "부장", rankCategory: "과장이상" },
+  { dept: "부설연구소",   name: "조민웅", rank: "부장", rankCategory: "과장이상" },
+  { dept: "부설연구소",   name: "정택기", rank: "부장", rankCategory: "과장이상" },
+  { dept: "생산관리부",   name: "양정민", rank: "부장", rankCategory: "과장이상" },
+  { dept: "품질보증부",   name: "유창근", rank: "부장", rankCategory: "과장이상" },
+  { dept: "수배전설계부", name: "노영훈", rank: "이사", rankCategory: "과장이상" },
+  { dept: "품질보증부",   name: "이병수", rank: "이사", rankCategory: "과장이상" },
+  // --- 일반 직원 ---
   { dept: "경영지원부", name: "이용석", rank: "주임", rankCategory: "대리이하" },
   { dept: "경영지원부", name: "김나래", rank: "주임", rankCategory: "대리이하" },
   { dept: "경영지원부", name: "권재응", rank: "주임", rankCategory: "대리이하" },
@@ -707,9 +783,17 @@ async function initData() {
   if (IS_REMOTE()) {
     try {
       const data = await remoteGet();
-      _cache.evaluators  = (data.evaluators && Object.keys(data.evaluators).length)
-        ? data.evaluators
-        : JSON.parse(JSON.stringify(DEFAULT_EVALUATORS));
+      // 서버에 없는 신규 평가자(예: 임원 3차/4차) 가 DEFAULT_EVALUATORS 에 추가된 경우
+      // 자동으로 채워지도록 병합. 서버에 있는 항목은 서버 값이 우선.
+      const serverEvs = data.evaluators || {};
+      const mergedEvs = JSON.parse(JSON.stringify(DEFAULT_EVALUATORS));
+      Object.keys(serverEvs).forEach(dept => {
+        if (!mergedEvs[dept]) mergedEvs[dept] = {};
+        Object.keys(serverEvs[dept]).forEach(round => {
+          mergedEvs[dept][round] = serverEvs[dept][round];
+        });
+      });
+      _cache.evaluators  = mergedEvs;
       _cache.evaluations = data.evaluations || [];
       _cache.remoteStatus = "ok";
       return;
@@ -959,11 +1043,10 @@ function renderHome() {
       </div>
       <ul>
         <li>평가표는 직급에 따라 자동으로 선택됩니다 (과장 이상 / 대리 이하).</li>
-        <li>평가자는 부서별 <b>1차/2차 평가자</b> 중 본인을 선택하여 진행합니다.</li>
-        <li>1차/2차 평가는 각각 1회씩만 제출 가능합니다 (수정 가능).</li>
-        <li>최종 점수는 1차·2차가 모두 제출된 경우 두 점수의 평균, 한쪽만 제출된 경우 해당 점수를 사용합니다.</li>
-        <li>평가 결과는 <b>관리자</b>와 <b>소속 부서 평가자 본인</b>만 열람 가능합니다.</li>
-        <li>부서별 등급 분포: <b>S 20% / A 30% / B 40% / C 10%</b> (부서원 3명 이상 상대평가 · 2명 이하는 점수 기준 절대평가)</li>
+        <li>일반 직원은 부서별 <b>1차 / 2차 평가자</b>가 평가합니다. 부장·이사는 별도 임원 풀로, <b>1차 (부사장) / 2차 (대표이사)</b> 가 평가합니다.</li>
+        <li>각 차수별로 1회씩 제출(수정 가능). 최종 점수는 해당 직원에게 적용되는 차수 점수들의 평균입니다.</li>
+        <li>평가 결과는 <b>관리자</b>와 <b>해당 평가자 본인</b>만 열람할 수 있습니다.</li>
+        <li>등급 분포: <b>S 20% / A 30% / B 40% / C 10%</b> (3명 이상 상대평가 · 2명 이하는 점수 기준 절대평가). 일반 직원은 부서 단위, 부장·이사는 임원 풀 단위로 산정됩니다.</li>
       </ul>
     </div>
   `;
@@ -1013,8 +1096,22 @@ function renderEvalLogin() {
     const d = $dept.value;
     const r = evs[d] || {};
     const opts = [`<option value="">— 선택 —</option>`];
-    if (r["1차"]) opts.push(`<option value="1차">1차 평가자 (${esc(r["1차"].name)} ${esc(r["1차"].title)})</option>`);
-    if (r["2차"]) opts.push(`<option value="2차">2차 평가자 (${esc(r["2차"].name)} ${esc(r["2차"].title)})</option>`);
+    // 일반 부서 표시 순서: 1차 → 2차, 임원 풀: 1차(조규오) → 1차(임웅걸) → 2차(양정일)
+    const order = ["1차","2차","3차-조규오","3차-임웅걸","4차"];
+    order.forEach(k => {
+      if (r[k]) {
+        const info = r[k];
+        const label = displayRound(k); // 3차-* → 1차, 4차 → 2차, 그 외 그대로
+        opts.push(`<option value="${esc(k)}">${esc(label)} 평가자 (${esc(info.name)} ${esc(info.title)})</option>`);
+      }
+    });
+    // 위 order 에 없는 기타 키도 혹시 모를 경우를 대비해 표시
+    Object.keys(r).forEach(k => {
+      if (!order.includes(k)) {
+        const info = r[k];
+        opts.push(`<option value="${esc(k)}">${esc(k)} 평가자 (${esc(info.name)} ${esc(info.title)})</option>`);
+      }
+    });
     $round.innerHTML = opts.join("");
   });
   document.getElementById("login-pw").addEventListener("keydown", e => {
@@ -1044,14 +1141,26 @@ function tryEvalLogin() {
   session.evaluatorDept = dept;
   session.evaluatorRound = round;
   session.evaluatorName = `${info.name} ${info.title}`;
+  // 대표이사(임원 4차)는 관리자 권한도 자동 부여
+  if (dept === "임원" && round === "4차") {
+    session.isAdmin = true;
+  }
   go("eval-home");
 }
 
+// 현재 로그인한 평가자가 관리자 권한을 가지는지
+function evaluatorHasAdminRight() {
+  return session.evaluatorDept === "임원" && session.evaluatorRound === "4차";
+}
+
 function logoutEvaluator() {
+  // 평가자 로그인 경로에서 얻은 관리자 권한도 함께 해제
+  if (evaluatorHasAdminRight()) session.isAdmin = false;
   session.evaluatorDept = null;
   session.evaluatorRound = null;
   session.evaluatorName = null;
   session.selectedEmp = null;
+  session.selectedEmpDept = null;
   go("home");
 }
 
@@ -1060,25 +1169,37 @@ function renderEvalHome() {
   if (!session.evaluatorDept) return go("eval-login");
   const dept = session.evaluatorDept;
   const round = session.evaluatorRound;
-  const emps = EMPLOYEES.filter(e => e.dept === dept);
   const evals = getEvaluations();
-  // 현재 평가자(1차/2차) 가 평가해야 하는 대상은 본인 제외(가능하면)한 부서원
-  const targets = emps.filter(e => !(e.name === getCurrentEvaluatorName(dept, round)));
+  let targets;
+  if (dept === "임원") {
+    // 3차/4차 평가자 — EXEC_TARGETS 에 정의된 대상만 평가
+    const specs = EXEC_TARGETS[round] || [];
+    targets = specs
+      .map(s => EMPLOYEES.find(e => e.dept === s.dept && e.name === s.name))
+      .filter(Boolean);
+  } else {
+    // 부서 1차/2차 평가자 — 부서원 중 부장·이사(임원 평가 대상) 제외, 본인 제외
+    const emps = EMPLOYEES.filter(e => e.dept === dept && !isExecEmp(e));
+    targets = emps.filter(e => !(e.name === getCurrentEvaluatorName(dept, round)));
+  }
   const doneMap = {};
   targets.forEach(t => {
-    const ev = evals.find(x => x.dept===dept && x.empName===t.name && x.round===round);
+    const ev = evals.find(x => x.dept===t.dept && x.empName===t.name && x.round===round);
     doneMap[t.name] = !!ev;
   });
   const initialTab = session.postLoginTab === "view" ? "view" : "list";
   session.postLoginTab = null; // 1회성 힌트
+  const titleRound = displayRound(round);
+  const viewTabLabel = dept === "임원" ? "임원 평가 결과 보기" : "우리 부서 결과 보기";
   $app().innerHTML = `
     <div class="card">
       <div class="flex between">
         <div>
-          <h2 style="margin:0">${esc(dept)} · ${esc(round)} 평가자</h2>
+          <h2 style="margin:0">${esc(dept)} · ${esc(titleRound)} 평가자</h2>
           <div class="mini">로그인: ${esc(session.evaluatorName)}</div>
         </div>
-        <div>
+        <div class="flex" style="gap:8px">
+          ${evaluatorHasAdminRight() ? `<button class="small" onclick="go('admin-home')" title="전체 평가 내용을 확인할 수 있습니다">🛠 관리자 대시보드</button>` : ``}
           <button class="secondary small" onclick="logoutEvaluator()">로그아웃</button>
         </div>
       </div>
@@ -1086,7 +1207,7 @@ function renderEvalHome() {
     <div class="card">
       <div class="tabs">
         <div class="tab ${initialTab==='list'?'active':''}" onclick="setEvalTab('list')">평가 대상자</div>
-        <div class="tab ${initialTab==='view'?'active':''}" onclick="setEvalTab('view')">우리 부서 결과 보기</div>
+        <div class="tab ${initialTab==='view'?'active':''}" onclick="setEvalTab('view')">${esc(viewTabLabel)}</div>
       </div>
       <div id="eval-tab-body"></div>
     </div>
@@ -1098,24 +1219,41 @@ function renderEvalHome() {
   }
 }
 
+// 내부 라운드 키 → 사용자 표시 문자열
+// 임원(부장·이사) 평가는 3차(부사장) → 1차, 4차(대표이사) → 2차 로 재라벨
+function displayRound(round) {
+  if (!round) return "";
+  if (round === "3차-조규오" || round === "3차-임웅걸") return "1차";
+  if (round === "4차") return "2차";
+  return round;
+}
+
 function setEvalTab(which) {
   document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
   const tabs = document.querySelectorAll(".tab");
+  const dept = session.evaluatorDept;
+  const round = session.evaluatorRound;
   if (which === "list") {
     tabs[0].classList.add("active");
-    const dept = session.evaluatorDept;
-    const round = session.evaluatorRound;
-    const emps = EMPLOYEES.filter(e => e.dept === dept)
-      .filter(e => !(e.name === getCurrentEvaluatorName(dept, round)));
+    let targets;
+    if (dept === "임원") {
+      const specs = EXEC_TARGETS[round] || [];
+      targets = specs
+        .map(s => EMPLOYEES.find(e => e.dept === s.dept && e.name === s.name))
+        .filter(Boolean);
+    } else {
+      targets = EMPLOYEES.filter(e => e.dept === dept && !isExecEmp(e))
+        .filter(e => !(e.name === getCurrentEvaluatorName(dept, round)));
+    }
     const evals = getEvaluations();
     const doneMap = {};
-    emps.forEach(t => {
-      doneMap[t.name] = !!evals.find(x => x.dept===dept && x.empName===t.name && x.round===round);
+    targets.forEach(t => {
+      doneMap[t.name] = !!evals.find(x => x.dept===t.dept && x.empName===t.name && x.round===round);
     });
-    renderEvalListTab(emps, doneMap);
+    renderEvalListTab(targets, doneMap);
   } else {
     tabs[1].classList.add("active");
-    renderDeptResultsInline(session.evaluatorDept, document.getElementById("eval-tab-body"));
+    renderDeptResultsInline(dept, document.getElementById("eval-tab-body"));
   }
 }
 
@@ -1127,15 +1265,17 @@ function getCurrentEvaluatorName(dept, round) {
 function renderEvalListTab(targets, doneMap) {
   const body = document.getElementById("eval-tab-body");
   if (!targets.length) {
-    body.innerHTML = `<div class="notice warn">평가 대상 부서원이 없습니다.</div>`;
+    body.innerHTML = `<div class="notice warn">평가 대상자가 없습니다.</div>`;
     return;
   }
+  const isExec = session.evaluatorDept === "임원";
   const cards = targets.map(e => `
-    <div class="emp-card" onclick="startEvalForm('${esc(e.name)}')">
+    <div class="emp-card" onclick="startEvalForm('${esc(e.dept)}','${esc(e.name)}')">
       <div class="name">${esc(e.name)} <span class="chip rank">${esc(e.rank)}</span></div>
+      ${isExec ? `<div class="mini" style="font-weight:600;color:var(--primary)">${esc(e.dept)}</div>` : ""}
       <div class="mini">${esc(e.rankCategory)} 평가표</div>
       <div class="meta">
-        <span>${esc(session.evaluatorRound)} 평가</span>
+        <span>${esc(displayRound(session.evaluatorRound))} 평가</span>
         <span class="chip ${doneMap[e.name] ? 'done' : 'pending'}">
           ${doneMap[e.name] ? '제출완료' : '미작성'}
         </span>
@@ -1143,31 +1283,33 @@ function renderEvalListTab(targets, doneMap) {
     </div>
   `).join("");
   body.innerHTML = `
-    <div class="notice info">부서원 카드를 클릭하면 평가표가 열립니다. 제출 후에도 다시 저장할 수 있습니다.</div>
+    <div class="notice info">${isExec ? '임원 평가 대상자 카드를 클릭하면 평가표가 열립니다.' : '부서원 카드를 클릭하면 평가표가 열립니다.'} 제출 후에도 다시 저장할 수 있습니다.</div>
     <div class="employee-grid">${cards}</div>
   `;
 }
 
-function startEvalForm(name) {
+function startEvalForm(dept, name) {
+  session.selectedEmpDept = dept;
   session.selectedEmp = name;
   go("eval-form");
 }
 
 /* --- 평가 입력 폼 --- */
 function renderEvalForm() {
-  const dept = session.evaluatorDept;
   const round = session.evaluatorRound;
   const empName = session.selectedEmp;
-  const emp = EMPLOYEES.find(e => e.dept === dept && e.name === empName);
+  // 임원(3차/4차) 평가자는 다른 부서 직원을 평가하므로 empDept 를 별도 사용
+  const empDept = session.selectedEmpDept || session.evaluatorDept;
+  const emp = EMPLOYEES.find(e => e.dept === empDept && e.name === empName);
   if (!emp) return go("eval-home");
   const form = emp.rankCategory === "과장이상" ? FORM_MANAGER : FORM_STAFF;
-  const existing = getEvaluation(dept, empName, round);
+  const existing = getEvaluation(empDept, empName, round);
   $app().innerHTML = `
     <div class="card">
       <div class="flex between">
         <div>
           <h2 style="margin:0">${esc(form.title)}</h2>
-          <div class="mini">${esc(dept)} · ${esc(emp.name)} ${esc(emp.rank)} · ${esc(round)} 평가자: ${esc(session.evaluatorName)}</div>
+          <div class="mini">${esc(empDept)} · ${esc(emp.name)} ${esc(emp.rank)} · ${esc(displayRound(round))} 평가자: ${esc(session.evaluatorName)}</div>
         </div>
         <div>
           <button class="secondary small" onclick="go('eval-home')">← 목록</button>
@@ -1269,10 +1411,10 @@ function recalcTotal() {
 }
 
 async function submitEval() {
-  const dept = session.evaluatorDept;
   const round = session.evaluatorRound;
   const empName = session.selectedEmp;
-  const emp = EMPLOYEES.find(e => e.dept === dept && e.name === empName);
+  const empDept = session.selectedEmpDept || session.evaluatorDept;
+  const emp = EMPLOYEES.find(e => e.dept === empDept && e.name === empName);
   const form = emp.rankCategory === "과장이상" ? FORM_MANAGER : FORM_STAFF;
   const scores = {};
   let missing = [];
@@ -1296,7 +1438,7 @@ async function submitEval() {
   const total = Object.values(scores).reduce((a,b)=>a+b,0);
   const comment = document.getElementById("comment").value;
   const ev = {
-    dept, empName, empRank: emp.rank, rankCategory: emp.rankCategory,
+    dept: empDept, empName, empRank: emp.rank, rankCategory: emp.rankCategory,
     round,
     evaluatorName: session.evaluatorName,
     scores, total, comment,
@@ -1318,7 +1460,10 @@ async function submitEval() {
 
 /* --- 평가자: 본인 부서 결과 조회 (인라인) --- */
 function renderDeptResultsInline(dept, container) {
-  const emps = EMPLOYEES.filter(e => e.dept === dept);
+  if (dept === "임원") {
+    return renderExecResultsInline(container);
+  }
+  const emps = EMPLOYEES.filter(e => e.dept === dept && !isExecEmp(e));
   const results = computeDeptResults(dept);
   const rows = results.map(r => `
     <tr>
@@ -1357,6 +1502,48 @@ function renderDeptResultsInline(dept, container) {
   `;
 }
 
+/* --- 평가자: 임원(부장·이사) 평가 결과 조회 --- */
+function renderExecResultsInline(container) {
+  const results = computeExecResults();
+  const totalTargets = EMPLOYEES.filter(isExecEmp).length;
+  const rows = results.map(r => `
+    <tr>
+      <td>${r.rankIndex}</td>
+      <td><b>${esc(r.empName)}</b></td>
+      <td>${esc(r.empRank)}</td>
+      <td>${esc(r.dept)}</td>
+      <td style="text-align:center">${r.score3 !== null ? r.score3.toFixed(1) : "-"}</td>
+      <td style="text-align:center">${r.score4 ?? "-"}</td>
+      <td style="text-align:center"><b>${r.avg !== null ? r.avg.toFixed(1) : "-"}</b></td>
+      <td style="text-align:center">${r.grade ? `<span class="chip ${r.grade.toLowerCase()}">${r.grade}</span>` : "-"}</td>
+    </tr>
+  `).join("");
+  const dist = gradeDistribution(results);
+  container.innerHTML = `
+    <div class="notice info">임원(부장·이사) 평가 결과는 1차(부사장)/2차(대표이사) 평가자 본인만 열람할 수 있습니다. 전사 결과는 관리자만 조회 가능합니다.</div>
+    <div class="stat-grid">
+      <div class="stat-box"><div class="label">평가 대상</div><div class="value">${totalTargets}명</div></div>
+      <div class="stat-box"><div class="label">제출 완료</div><div class="value">${results.filter(r => r.avg !== null).length}</div></div>
+      <div class="stat-box"><div class="label">전체 평균</div><div class="value">${deptAverage(results)}</div></div>
+    </div>
+    <div>
+      <h3>임원 S/A/B/C 분포</h3>
+      <div class="mini" style="margin-bottom:6px">등급 산정: ${esc(gradingModeLabel(results))}</div>
+      ${renderDistBar(dist)}
+    </div>
+    <div style="margin-top:20px;overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th style="width:50px">순위</th><th>이름</th><th>직급</th><th>부서</th>
+          <th style="width:80px">1차</th><th style="width:80px">2차</th>
+          <th style="width:80px">평균</th><th style="width:80px">등급</th>
+        </tr></thead>
+        <tbody>${rows || `<tr><td colspan="8" style="text-align:center" class="muted">아직 결과가 없습니다.</td></tr>`}</tbody>
+      </table>
+    </div>
+  `;
+}
+
 /* --- 관리자 로그인 --- */
 function renderAdminLogin() {
   $app().innerHTML = `
@@ -1380,7 +1567,7 @@ function renderAdminLogin() {
 
 function tryAdminLogin() {
   const pw = document.getElementById("admin-pw").value.trim();
-  if (pw !== ADMIN_PASSWORD) {
+  if (pw !== getAdminPassword()) {
     document.getElementById("admin-err").innerHTML =
       `<div class="notice err">비밀번호가 일치하지 않습니다.</div>`;
     return;
@@ -1391,7 +1578,9 @@ function tryAdminLogin() {
 
 function logoutAdmin() {
   session.isAdmin = false;
-  go("home");
+  // 대표이사가 평가자 세션을 통해 들어온 경우 평가자 로그인까지는 유지 → 평가자 홈으로 복귀
+  if (session.evaluatorDept) go("eval-home");
+  else go("home");
 }
 
 /* --- 관리자 대시보드 --- */
@@ -1403,9 +1592,10 @@ function renderAdminHome() {
       <div class="flex between">
         <div>
           <h2 style="margin:0">관리자 대시보드</h2>
-          <div class="mini">전체 평가결과 · 부서별 분포 · 평가자 계정</div>
+          <div class="mini">전체 평가결과 · 부서별 분포 · 평가자 계정${session.evaluatorDept === "임원" && session.evaluatorRound === "4차" ? ` · 대표이사 열람 중 (${esc(session.evaluatorName||"")})` : ``}</div>
         </div>
-        <div>
+        <div class="flex" style="gap:8px">
+          ${session.evaluatorDept === "임원" && session.evaluatorRound === "4차" ? `<button class="secondary small" onclick="go('eval-home')">← 평가자 화면</button>` : ``}
           <button class="secondary small" onclick="logoutAdmin()">로그아웃</button>
         </div>
       </div>
@@ -1416,6 +1606,7 @@ function renderAdminHome() {
         <div class="tab ${tab==='dept'?'active':''}"    onclick="setAdminTab('dept')">부서별 분포</div>
         <div class="tab ${tab==='accounts'?'active':''}" onclick="setAdminTab('accounts')">평가자 계정</div>
         <div class="tab ${tab==='data'?'active':''}"     onclick="setAdminTab('data')">데이터 / 내보내기</div>
+        <div class="tab ${tab==='security'?'active':''}" onclick="setAdminTab('security')">보안</div>
       </div>
       <div id="admin-body"></div>
     </div>
@@ -1426,7 +1617,7 @@ function renderAdminHome() {
 function setAdminTab(tab) {
   session.adminTab = tab;
   document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
-  const map = { results:0, dept:1, accounts:2, data:3 };
+  const map = { results:0, dept:1, accounts:2, data:3, security:4 };
   const tabs = document.querySelectorAll(".tab");
   if (tabs[map[tab]]) tabs[map[tab]].classList.add("active");
   const body = document.getElementById("admin-body");
@@ -1434,33 +1625,149 @@ function setAdminTab(tab) {
   else if (tab === "dept") renderAdminDeptDist(body);
   else if (tab === "accounts") renderAdminAccounts(body);
   else if (tab === "data") renderAdminData(body);
+  else if (tab === "security") renderAdminSecurity(body);
+}
+
+/* --- 관리자 보안 (비밀번호 변경) --- */
+function renderAdminSecurity(body) {
+  const usingCustom = (() => {
+    try { return !!(localStorage.getItem(ADMIN_PW_KEY) || "").trim(); } catch(e) { return false; }
+  })();
+  body.innerHTML = `
+    <h3 style="margin-top:4px">관리자 비밀번호 변경</h3>
+    <div class="notice info" style="margin-bottom:12px">
+      관리자 비밀번호는 이 브라우저의 로컬 저장소(<code>localStorage</code>)에 저장됩니다.
+      다른 PC / 브라우저에서 관리자로 접속할 때는 해당 기기에서 동일한 비밀번호로 <b>처음 한 번만 재설정</b>해 주세요.
+      <br>현재 비밀번호 상태: <b>${usingCustom ? "사용자 지정 비밀번호 사용 중" : "초기 비밀번호 사용 중"}</b>
+    </div>
+    <div style="max-width:440px">
+      <div id="sec-err"></div>
+      <div style="margin-bottom:10px">
+        <label>현재 비밀번호</label>
+        <input id="sec-old" type="password" autocomplete="off" placeholder="현재 비밀번호"/>
+      </div>
+      <div style="margin-bottom:10px">
+        <label>새 비밀번호 (8자 이상 권장)</label>
+        <input id="sec-new" type="password" autocomplete="off" placeholder="새 비밀번호"/>
+      </div>
+      <div style="margin-bottom:14px">
+        <label>새 비밀번호 확인</label>
+        <input id="sec-new2" type="password" autocomplete="off" placeholder="새 비밀번호 확인"/>
+      </div>
+      <div class="flex" style="gap:8px">
+        <button onclick="changeAdminPassword()">비밀번호 변경</button>
+        ${usingCustom ? `<button class="secondary" onclick="resetAdminPassword()">초기 비밀번호로 복구</button>` : ``}
+      </div>
+    </div>
+  `;
+}
+
+function changeAdminPassword() {
+  const errEl = document.getElementById("sec-err");
+  const oldPw = document.getElementById("sec-old").value;
+  const newPw = document.getElementById("sec-new").value;
+  const newPw2 = document.getElementById("sec-new2").value;
+  if (!oldPw || !newPw || !newPw2) {
+    errEl.innerHTML = `<div class="notice err">모든 칸을 입력해 주세요.</div>`;
+    return;
+  }
+  if (oldPw !== getAdminPassword()) {
+    errEl.innerHTML = `<div class="notice err">현재 비밀번호가 일치하지 않습니다.</div>`;
+    return;
+  }
+  if (newPw.length < 6) {
+    errEl.innerHTML = `<div class="notice err">새 비밀번호는 6자 이상이어야 합니다.</div>`;
+    return;
+  }
+  if (newPw !== newPw2) {
+    errEl.innerHTML = `<div class="notice err">새 비밀번호 확인이 일치하지 않습니다.</div>`;
+    return;
+  }
+  if (newPw === oldPw) {
+    errEl.innerHTML = `<div class="notice err">기존 비밀번호와 동일합니다. 다른 값을 사용해 주세요.</div>`;
+    return;
+  }
+  setAdminPassword(newPw);
+  errEl.innerHTML = `<div class="notice ok">관리자 비밀번호가 변경되었습니다.</div>`;
+  document.getElementById("sec-old").value = "";
+  document.getElementById("sec-new").value = "";
+  document.getElementById("sec-new2").value = "";
+  setTimeout(() => renderAdminSecurity(document.getElementById("admin-body")), 800);
+}
+
+function resetAdminPassword() {
+  if (!confirm("관리자 비밀번호를 초기 비밀번호로 되돌릴까요?\n(현재 이 브라우저에 저장된 비밀번호가 지워집니다.)")) return;
+  try { localStorage.removeItem(ADMIN_PW_KEY); } catch(e) {}
+  renderAdminSecurity(document.getElementById("admin-body"));
+  alert("초기 비밀번호로 복구되었습니다.");
 }
 
 function renderAdminResults(body) {
-  const depts = [...new Set(EMPLOYEES.map(e => e.dept))];
+  const depts = [...new Set(EMPLOYEES.filter(e => !isExecEmp(e)).map(e => e.dept))];
   const all = [];
   depts.forEach(d => {
     computeDeptResults(d).forEach(r => all.push({ ...r, dept: d }));
   });
   const byDept = {};
   depts.forEach(d => byDept[d] = all.filter(r => r.dept === d));
+  const execResults = computeExecResults();
+  const execAll = execResults.map(r => ({ ...r }));
 
-  const totalCount = EMPLOYEES.length;
-  const submittedCount = all.filter(r => r.avg !== null).length;
+  const regularCount = EMPLOYEES.filter(e => !isExecEmp(e)).length;
+  const execCount = EMPLOYEES.filter(isExecEmp).length;
+  const totalCount = regularCount + execCount;
+  const submittedCount = all.filter(r => r.avg !== null).length + execAll.filter(r => r.avg !== null).length;
   const overallAvg = (() => {
-    const vals = all.map(r=>r.avg).filter(v => v !== null);
+    const vals = [...all, ...execAll].map(r=>r.avg).filter(v => v !== null);
     if (!vals.length) return "-";
     return (vals.reduce((a,b)=>a+b,0)/vals.length).toFixed(1);
   })();
 
   body.innerHTML = `
     <div class="stat-grid">
-      <div class="stat-box"><div class="label">전체 대상자</div><div class="value">${totalCount}명</div></div>
+      <div class="stat-box"><div class="label">전체 대상자</div><div class="value">${totalCount}명 <span class="mini">(일반 ${regularCount} · 임원 ${execCount})</span></div></div>
       <div class="stat-box"><div class="label">제출 완료</div><div class="value">${submittedCount}</div></div>
       <div class="stat-box"><div class="label">전체 평균</div><div class="value">${overallAvg}</div></div>
       <div class="stat-box"><div class="label">부서 수</div><div class="value">${depts.length}</div></div>
     </div>
     ${depts.map(d => renderDeptResultTable(d, byDept[d])).join("")}
+    ${renderExecResultTable(execResults)}
+  `;
+}
+
+function renderExecResultTable(results) {
+  const dist = gradeDistribution(results);
+  const rows = results.map(r => `
+    <tr>
+      <td>${r.rankIndex}</td>
+      <td><b>${esc(r.empName)}</b></td>
+      <td>${esc(r.empRank)}</td>
+      <td>${esc(r.dept)}</td>
+      <td style="text-align:center">${r.score3 !== null ? r.score3.toFixed(1) : "-"}</td>
+      <td style="text-align:center">${r.score4 ?? "-"}</td>
+      <td style="text-align:center"><b>${r.avg !== null ? r.avg.toFixed(1) : "-"}</b></td>
+      <td style="text-align:center">${r.grade ? `<span class="chip ${r.grade.toLowerCase()}">${r.grade}</span>` : "-"}</td>
+    </tr>
+  `).join("");
+  return `
+    <div style="margin-top:24px;border-top:2px solid var(--primary);padding-top:16px">
+      <div class="flex between">
+        <h3 style="margin:0">임원 (부장·이사) <span class="muted">(${results.length}명)</span></h3>
+        <div class="mini">S ${dist.S.length} · A ${dist.A.length} · B ${dist.B.length} · C ${dist.C.length}</div>
+      </div>
+      <div class="mini" style="margin:4px 0 6px">등급 산정: ${esc(gradingModeLabel(results))} · 1차(조규오/임웅걸) + 2차(양정일)</div>
+      ${renderDistBar(dist)}
+      <div style="margin-top:10px;overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th style="width:50px">순위</th><th>이름</th><th>직급</th><th>부서</th>
+          <th style="width:70px">1차</th><th style="width:70px">2차</th>
+          <th style="width:70px">평균</th><th style="width:70px">등급</th>
+        </tr></thead>
+        <tbody>${rows || `<tr><td colspan="8" style="text-align:center" class="muted">아직 결과가 없습니다.</td></tr>`}</tbody>
+      </table>
+      </div>
+    </div>
   `;
 }
 
@@ -1501,7 +1808,7 @@ function renderDeptResultTable(dept, results) {
 }
 
 function renderAdminDeptDist(body) {
-  const depts = [...new Set(EMPLOYEES.map(e => e.dept))];
+  const depts = [...new Set(EMPLOYEES.filter(e => !isExecEmp(e)).map(e => e.dept))];
   const boxes = depts.map(d => {
     const res = computeDeptResults(d);
     const dist = gradeDistribution(res);
@@ -1526,24 +1833,56 @@ function renderAdminDeptDist(body) {
       </div>
     `;
   }).join("");
+
+  // 임원 풀 분포
+  const execRes = computeExecResults();
+  const execDist = gradeDistribution(execRes);
+  const execBox = `
+    <div class="card" style="margin-bottom:12px;border-left:4px solid var(--primary)">
+      <div class="flex between">
+        <h3 style="margin:0">임원 (부장·이사) <span class="muted">(${execRes.length}명)</span></h3>
+        <div class="mini">${esc(gradingModeLabel(execRes))}</div>
+      </div>
+      ${renderDistBar(execDist)}
+      <table style="margin-top:10px">
+        <thead><tr><th>등급</th><th>대상자</th></tr></thead>
+        <tbody>
+          ${["S","A","B","C"].map(g => `
+            <tr>
+              <td><span class="chip ${g.toLowerCase()}">${g}</span> (${execDist[g].length}명)</td>
+              <td>${execDist[g].map(r => `${esc(r.empName)} ${esc(r.empRank)} (${esc(r.dept)})`).join(", ") || `<span class="muted">-</span>`}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+
   body.innerHTML = `
     <div class="notice info">
       부서원이 <b>3명 이상</b>인 부서는 총점 순위를 기준으로 <b>S 20%</b>, <b>A 30%</b>, <b>B 40%</b>, <b>C 10%</b> 비율 <b>상대평가</b>로 등급이 자동 산정됩니다.
       부서원이 <b>2명 이하</b>인 소규모 부서(예: 자재관리부·신사업부)는 비율 분포가 의미가 없어
       <b>점수 기준 절대평가</b>(S ≥ ${ABS_GRADE_THRESHOLDS.S} · A ${ABS_GRADE_THRESHOLDS.A}~${ABS_GRADE_THRESHOLDS.S-1} · B ${ABS_GRADE_THRESHOLDS.B}~${ABS_GRADE_THRESHOLDS.A-1} · C &lt; ${ABS_GRADE_THRESHOLDS.B})로 등급을 부여합니다.
+      <br>임원(부장·이사)은 1차(조규오/임웅걸 부사장) + 2차(양정일 대표이사) 점수를 별도 풀로 묶어 동일한 상대평가 방식으로 산정합니다.
     </div>
     ${boxes}
+    ${execBox}
   `;
 }
 
 function renderAdminAccounts(body) {
   const evs = getEvaluators();
   const rows = [];
+  const roundOrder = ["1차","2차","3차-조규오","3차-임웅걸","4차"];
   Object.entries(evs).forEach(([dept, info]) => {
-    ["1차","2차"].forEach(r => {
+    roundOrder.forEach(r => {
       if (info[r]) {
         rows.push({ dept, round: r, ...info[r] });
       }
+    });
+    // order 에 없는 기타 차수 혹시 모를 때
+    Object.keys(info).forEach(r => {
+      if (!roundOrder.includes(r)) rows.push({ dept, round: r, ...info[r] });
     });
   });
   body.innerHTML = `
@@ -1558,10 +1897,14 @@ function renderAdminAccounts(body) {
         <th>부서</th><th>차수</th><th>평가자</th><th>직위</th><th>비밀번호</th><th>관리</th>
       </tr></thead>
       <tbody>
-        ${rows.map((r,i) => `
+        ${rows.map((r,i) => {
+          const roundLabel = r.round.startsWith("3차-")
+            ? `1차 (${r.round.slice(3)})`
+            : (r.round === "4차" ? "2차" : r.round);
+          return `
           <tr>
             <td>${esc(r.dept)}</td>
-            <td>${esc(r.round)}</td>
+            <td>${esc(roundLabel)}</td>
             <td>${esc(r.name)}</td>
             <td>${esc(r.title)}</td>
             <td><span class="pw-view" id="pw-${i}" data-dept="${esc(r.dept)}" data-round="${esc(r.round)}" data-val="${esc(r.password)}">${esc(r.password)}</span></td>
@@ -1569,7 +1912,7 @@ function renderAdminAccounts(body) {
               <button class="small" onclick="regenPw('${esc(r.dept)}','${esc(r.round)}')">비밀번호 재발급</button>
             </td>
           </tr>
-        `).join("")}
+        `;}).join("")}
       </tbody>
     </table>
     </div>
@@ -1612,9 +1955,18 @@ async function regenPw(dept, round) {
 function exportAccountsCsv() {
   const evs = getEvaluators();
   const rows = [["부서","차수","평가자","직위","비밀번호"]];
+  const roundOrder = ["1차","2차","3차-조규오","3차-임웅걸","4차"];
   Object.entries(evs).forEach(([dept, info]) => {
-    ["1차","2차"].forEach(r => {
-      if (info[r]) rows.push([dept, r, info[r].name, info[r].title, info[r].password]);
+    roundOrder.forEach(r => {
+      if (info[r]) {
+        const label = r.startsWith("3차-") ? `1차 (${r.slice(3)})` : (r === "4차" ? "2차" : r);
+        rows.push([dept, label, info[r].name, info[r].title, info[r].password]);
+      }
+    });
+    Object.keys(info).forEach(r => {
+      if (!roundOrder.includes(r)) {
+        rows.push([dept, r, info[r].name, info[r].title, info[r].password]);
+      }
     });
   });
   const csv = "\uFEFF" + rows.map(r => r.map(v => `"${String(v).replaceAll('"','""')}"`).join(",")).join("\n");
@@ -1680,7 +2032,8 @@ function downloadUploadTemplate() {
   const header = ["부서","이름","직급","1차점수","2차점수","1차평가자","2차평가자","1차코멘트","2차코멘트"];
   const rows = [header];
   const evs = getEvaluators();
-  EMPLOYEES.forEach(e => {
+  // 부장·이사(임원 평가 대상)는 1차/2차 템플릿에서 제외 — 3차/4차는 웹으로만 제출
+  EMPLOYEES.filter(e => !isExecEmp(e)).forEach(e => {
     const round1Name = evs[e.dept] && evs[e.dept]["1차"] ? `${evs[e.dept]["1차"].name} ${evs[e.dept]["1차"].title}` : "";
     const round2Name = evs[e.dept] && evs[e.dept]["2차"] ? `${evs[e.dept]["2차"].name} ${evs[e.dept]["2차"].title}` : "";
     // 평가자 본인 행은 해당 차수의 점수칸을 공란 처리(자기 자신 평가 X)
@@ -1719,7 +2072,7 @@ function downloadUploadTemplate() {
 
 function exportEvaluationsXlsx() {
   if (!ensureSheetJS()) return;
-  const depts = [...new Set(EMPLOYEES.map(e => e.dept))];
+  const depts = [...new Set(EMPLOYEES.filter(e => !isExecEmp(e)).map(e => e.dept))];
   const header = ["부서","이름","직급","평가표","1차점수","2차점수","1차평가자","2차평가자","1차코멘트","2차코멘트","평균","등급","부서내순위"];
   const rows = [header];
   const all = getEvaluations();
@@ -1739,8 +2092,33 @@ function exportEvaluationsXlsx() {
   });
   const ws = XLSX.utils.aoa_to_sheet(rows);
   ws["!cols"] = [{wch:14},{wch:10},{wch:8},{wch:10},{wch:10},{wch:10},{wch:18},{wch:18},{wch:30},{wch:30},{wch:8},{wch:8},{wch:10}];
+
+  // 임원(부장·이사) 별도 시트
+  const execHeader = ["부서","이름","직급","1차점수","1차평가자","1차코멘트","2차점수","2차평가자","2차코멘트","평균","등급","순위"];
+  const execRows = [execHeader];
+  computeExecResults().forEach(r => {
+    const r3kq = all.find(x => x.dept===r.dept && x.empName===r.empName && x.round==="3차-조규오");
+    const r3iw = all.find(x => x.dept===r.dept && x.empName===r.empName && x.round==="3차-임웅걸");
+    const r4   = all.find(x => x.dept===r.dept && x.empName===r.empName && x.round==="4차");
+    const r3 = r3kq || r3iw;
+    execRows.push([
+      r.dept, r.empName, r.empRank,
+      r.score3 !== null ? Number(r.score3.toFixed(2)) : "",
+      r3 ? r3.evaluatorName : "",
+      r3 ? (r3.comment || "") : "",
+      r.score4 ?? "",
+      r4 ? r4.evaluatorName : "",
+      r4 ? (r4.comment || "") : "",
+      r.avg !== null ? Number(r.avg.toFixed(2)) : "",
+      r.grade ?? "", r.rankIndex
+    ]);
+  });
+  const ws2 = XLSX.utils.aoa_to_sheet(execRows);
+  ws2["!cols"] = [{wch:14},{wch:10},{wch:8},{wch:10},{wch:18},{wch:30},{wch:10},{wch:18},{wch:30},{wch:8},{wch:8},{wch:8}];
+
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "평가결과");
+  XLSX.utils.book_append_sheet(wb, ws2, "임원평가결과");
   XLSX.writeFile(wb, `인사평가결과_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 
@@ -1813,6 +2191,10 @@ function processUploadRows(rows) {
     const emp = EMPLOYEES.find(e => e.dept === dept && e.name === name);
     if (!emp) {
       errors.push({ row: idx + 2, dept, name, reason: "등록된 직원과 일치하지 않습니다" });
+      return;
+    }
+    if (isExecEmp(emp)) {
+      errors.push({ row: idx + 2, dept, name, reason: "부장·이사는 일반 1차/2차 업로드 대상이 아닙니다. 임원 평가(부사장·대표이사)는 웹 화면에서만 제출됩니다." });
       return;
     }
     if (s1 === null && s2 === null) {
@@ -1945,15 +2327,24 @@ function cancelUpload() {
 }
 
 function exportEvaluationsCsv() {
-  const depts = [...new Set(EMPLOYEES.map(e => e.dept))];
-  const rows = [["부서","이름","직급","평가표","1차점수","2차점수","평균","등급","부서내순위"]];
+  const depts = [...new Set(EMPLOYEES.filter(e => !isExecEmp(e)).map(e => e.dept))];
+  const rows = [["부서","이름","직급","평가표","1차점수","2차점수","임원1차점수","임원2차점수","평균","등급","부서내순위"]];
   depts.forEach(d => {
     computeDeptResults(d).forEach(r => {
       rows.push([d, r.empName, r.empRank, r.rankCategory,
-        r.score1 ?? "", r.score2 ?? "",
+        r.score1 ?? "", r.score2 ?? "", "", "",
         r.avg !== null ? r.avg.toFixed(2) : "",
         r.grade ?? "", r.rankIndex]);
     });
+  });
+  // 임원(부장·이사)
+  computeExecResults().forEach(r => {
+    rows.push([r.dept, r.empName, r.empRank, r.rankCategory,
+      "", "",
+      r.score3 !== null ? r.score3.toFixed(2) : "",
+      r.score4 ?? "",
+      r.avg !== null ? r.avg.toFixed(2) : "",
+      r.grade ?? "", r.rankIndex]);
   });
   const csv = "\uFEFF" + rows.map(r => r.map(v => `"${String(v).replaceAll('"','""')}"`).join(",")).join("\n");
   const blob = new Blob([csv], { type: "text/csv" });
@@ -2010,7 +2401,8 @@ function gradeByAbsoluteScore(score) {
 const SMALL_DEPT_THRESHOLD = 3;
 
 function computeDeptResults(dept) {
-  const emps = EMPLOYEES.filter(e => e.dept === dept);
+  // 부장/이사(임원 평가 대상) 는 부서 등급 산정에서 제외 — 임원 풀에서 별도 산정
+  const emps = EMPLOYEES.filter(e => e.dept === dept && !isExecEmp(e));
   const evals = getEvaluations();
   const rows = emps.map(e => {
     const e1 = evals.find(x => x.dept===dept && x.empName===e.name && x.round==="1차");
@@ -2079,6 +2471,65 @@ function computeDeptResults(dept) {
   return rows;
 }
 
+/* --- 임원(부장·이사) 평가 결과 계산 ---
+ * 3차(조규오 OR 임웅걸), 4차(양정일) 점수를 평균해서 avg 산출.
+ * 11명 전체를 하나의 풀로 S20/A30/B40/C10 상대평가.
+ */
+function computeExecResults() {
+  const emps = EMPLOYEES.filter(isExecEmp);
+  const evals = getEvaluations();
+  const rows = emps.map(e => {
+    const r3kq = evals.find(x => x.dept===e.dept && x.empName===e.name && x.round==="3차-조규오");
+    const r3iw = evals.find(x => x.dept===e.dept && x.empName===e.name && x.round==="3차-임웅걸");
+    const r4   = evals.find(x => x.dept===e.dept && x.empName===e.name && x.round==="4차");
+    // 3차: 대상자별로 조규오 또는 임웅걸 중 한 명만 평가 (둘 다 있으면 평균)
+    let score3 = null, eval3Name = null;
+    const arr3 = [];
+    if (r3kq) { arr3.push(r3kq.total); eval3Name = r3kq.evaluatorName; }
+    if (r3iw) { arr3.push(r3iw.total); eval3Name = eval3Name ? `${eval3Name}, ${r3iw.evaluatorName}` : r3iw.evaluatorName; }
+    if (arr3.length) score3 = arr3.reduce((a,b)=>a+b,0)/arr3.length;
+    const score4 = r4 ? r4.total : null;
+    const parts = [];
+    if (score3 !== null) parts.push(score3);
+    if (score4 !== null) parts.push(score4);
+    const avg = parts.length ? parts.reduce((a,b)=>a+b,0)/parts.length : null;
+    return {
+      dept: e.dept, empName: e.name, empRank: e.rank, rankCategory: e.rankCategory,
+      score3, score4, eval3Name,
+      eval4Name: r4 ? r4.evaluatorName : null,
+      avg
+    };
+  });
+  rows.sort((a,b) => {
+    if (a.avg === null && b.avg === null) return 0;
+    if (a.avg === null) return 1;
+    if (b.avg === null) return -1;
+    return b.avg - a.avg;
+  });
+  const submitted = rows.filter(r => r.avg !== null);
+  const total = submitted.length;
+  const useAbsolute = emps.length < SMALL_DEPT_THRESHOLD;
+  if (useAbsolute) {
+    submitted.forEach((r, i) => { r.rankIndex = i + 1; r.grade = gradeByAbsoluteScore(r.avg); r.gradingMode = "absolute"; });
+  } else {
+    const sCount = Math.round(total * 0.2);
+    const aCount = Math.round(total * 0.3);
+    const bCount = Math.round(total * 0.4);
+    submitted.forEach((r, i) => {
+      r.rankIndex = i + 1;
+      if (i < sCount) r.grade = "S";
+      else if (i < sCount + aCount) r.grade = "A";
+      else if (i < sCount + aCount + bCount) r.grade = "B";
+      else r.grade = "C";
+      r.gradingMode = "distribution";
+    });
+  }
+  rows.forEach(r => { if (r.avg === null) { r.rankIndex = "-"; r.grade = null; r.gradingMode = null; } });
+  rows._gradingMode = useAbsolute ? "absolute" : "distribution";
+  rows._deptSize = emps.length;
+  return rows;
+}
+
 // 해당 부서가 어떤 등급 산정 방식을 쓰는지 레이블 반환
 function gradingModeLabel(results) {
   if (results._gradingMode === "absolute") {
@@ -2139,6 +2590,8 @@ window.cancelUpload = cancelUpload;
 window.clearAllEvaluations = clearAllEvaluations;
 window.manualRefresh = manualRefresh;
 window.retryConnect = retryConnect;
+window.changeAdminPassword = changeAdminPassword;
+window.resetAdminPassword = resetAdminPassword;
 
 async function bootstrap() {
   // 초기 로딩 스피너
