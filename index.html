@@ -889,6 +889,13 @@ async function initData() {
       // 서버에 없는 신규 평가자(예: 임원 3차/4차) 가 DEFAULT_EVALUATORS 에 추가된 경우
       // 자동으로 채워지도록 병합. 서버에 있는 항목은 서버 값이 우선.
       const serverEvs = data.evaluators || {};
+      // 구 부서명 → 신 부서명 rename 안전망 (서버 시트 정리 전까지)
+      const DEPT_RENAME = { "신재생영업부": "신재생에너지영업부" };
+      Object.keys(serverEvs).forEach(d => {
+        const nd = DEPT_RENAME[d];
+        if (nd && !serverEvs[nd]) { serverEvs[nd] = serverEvs[d]; delete serverEvs[d]; }
+      });
+      (data.evaluations || []).forEach(e => { if (DEPT_RENAME[e.dept]) e.dept = DEPT_RENAME[e.dept]; });
       const mergedEvs = JSON.parse(JSON.stringify(DEFAULT_EVALUATORS));
       Object.keys(serverEvs).forEach(dept => {
         if (!mergedEvs[dept]) mergedEvs[dept] = {};
