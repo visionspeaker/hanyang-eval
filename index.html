@@ -579,6 +579,10 @@ const DEFAULT_EVALUATORS = {
     "3차-조규오": { name: "조규오", title: "부사장",   password: "KR3DQN" }, // 경영지원부 강유석 부장 전담
     "3차-임웅걸": { name: "임웅걸", title: "부사장",   password: "IW5FHS" }, // 그 외 부장들 담당
     "4차":        { name: "양정일", title: "대표이사", password: "YJ9PTM" }  // 부장 9명 + 이사 2명 전체
+  },
+  // 인사/안전관리 담당자 (근태·안전·교육 가감점 입력) — 로그인하면 가감점 관리 화면으로 진입
+  "인사/안전관리": {
+    "담당": { name: "강유석", title: "부장", password: "HRSFTY" }
   }
 };
 
@@ -682,7 +686,7 @@ const EMPLOYEES = [
   { dept: "신재생에너지영업부", name: "김은지", rank: "주임", rankCategory: "대리이하" },
   { dept: "신재생에너지영업부", name: "오영택", rank: "대리", rankCategory: "대리이하" },
   { dept: "신사업부", name: "이승호", rank: "팀장", rankCategory: "과장이상" },
-  { dept: "신사업부", name: "홍승우", rank: "과장", rankCategory: "과장이상" },
+  { dept: "신사업부", name: "홍승우", rank: "과장", rankCategory: "과장이상" }
 ];
 
 // 평가표 정의
@@ -907,6 +911,7 @@ async function initData() {
       _cache.evaluations = (data.evaluations || []).map(fillEvaluationPeriod);
       // 서버 settings 우선, 없으면 기존 데이터로부터 자동 유추
       _cache.settings    = normalizeSettings(data.settings || deriveSettingsFromEvaluations(_cache.evaluations));
+      _cache.adjustments = (data.adjustments || []);
       _cache.remoteStatus = "ok";
       return;
     } catch (e) {
@@ -917,6 +922,7 @@ async function initData() {
       _cache.evaluators = loadStore(STORE_KEYS.EVALUATORS, JSON.parse(JSON.stringify(DEFAULT_EVALUATORS)));
       _cache.evaluations = loadStore(STORE_KEYS.EVALUATIONS, []).map(fillEvaluationPeriod);
       _cache.settings   = normalizeSettings(loadStore(STORE_KEYS.SETTINGS, deriveSettingsFromEvaluations(_cache.evaluations)));
+      _cache.adjustments = loadStore("hy_adjustments_v1", []);
       return;
     }
   }
@@ -924,6 +930,7 @@ async function initData() {
   _cache.evaluators  = loadStore(STORE_KEYS.EVALUATORS, JSON.parse(JSON.stringify(DEFAULT_EVALUATORS)));
   _cache.evaluations = loadStore(STORE_KEYS.EVALUATIONS, []).map(fillEvaluationPeriod);
   _cache.settings   = normalizeSettings(loadStore(STORE_KEYS.SETTINGS, deriveSettingsFromEvaluations(_cache.evaluations)));
+  _cache.adjustments = loadStore("hy_adjustments_v1", []);
   _cache.remoteStatus = "local";
 }
 
@@ -1105,6 +1112,46 @@ async function updateEvaluatorRemote(dept, round, fields) {
   }
 }
 
+/* ---- 가감점 (adjustments) ---- */
+function getAllAdjustments()  { return _cache.adjustments || []; }
+function getAdjustments(period) {
+  const p = period || getActivePeriod();
+  return getAllAdjustments().filter(a => (a.period || "2026-H1") === p);
+}
+// (period, dept, empName) 별 카테고리 합계
+function getAdjustmentTotal(period, dept, empName) {
+  return getAdjustments(period)
+    .filter(a => a.dept === dept && a.empName === empName)
+    .reduce((s, a) => s + (Number(a.points) || 0), 0);
+}
+// (period, dept, empName) 별 카테고리별 상세 { 근태: {points, reason}, ... }
+function getAdjustmentDetail(period, dept, empName) {
+  const out = {};
+  getAdjustments(period)
+    .filter(a => a.dept === dept && a.empName === empName)
+    .forEach(a => { out[a.category] = { points: Number(a.points)||0, reason: a.reason||"", updatedBy: a.updatedBy||"", updatedAt: a.updatedAt||"" }; });
+  return out;
+}
+async function bulkUpsertAdjustmentsRemote(list) {
+  // 로컬 캐시 갱신
+  const all = _cache.adjustments || [];
+  list.forEach(item => {
+    const idx = all.findIndex(x =>
+      (x.period||"") === (item.period||"") &&
+      x.dept === item.dept &&
+      x.empName === item.empName &&
+      x.category === item.category
+    );
+    if (idx >= 0) all[idx] = item; else all.push(item);
+  });
+  _cache.adjustments = all;
+  if (IS_REMOTE()) {
+    await remotePost("bulkUpsertAdjustments", list);
+  } else {
+    saveStore("hy_adjustments_v1", all);
+  }
+}
+
 /* ==== 세션 (메모리) ==== */
 let session = {
   evaluatorDept: null,
@@ -1185,6 +1232,7 @@ function render() {
   if (v === "eval-view") return renderEvalView();
   if (v === "admin-login") return renderAdminLogin();
   if (v === "admin-home") return renderAdminHome();
+  if (v === "adj-admin") return renderAdjustmentAdmin();
   renderHome();
 }
 
@@ -1362,6 +1410,10 @@ function tryEvalLogin() {
   // 대표이사(임원 4차)는 관리자 권한도 자동 부여
   if (dept === "임원" && round === "4차") {
     session.isAdmin = true;
+  }
+  // 인사/안전관리 담당자는 가감점 관리 화면으로 진입
+  if (dept === "인사/안전관리") {
+    return go("adj-admin");
   }
   go("eval-home");
 }
@@ -1711,6 +1763,7 @@ function getViewerRole() {
     if (session.evaluatorRound === "4차") return "exec-2nd";
     if (session.evaluatorRound === "3차-조규오" || session.evaluatorRound === "3차-임웅걸") return "exec-1st";
   }
+  if (session.evaluatorDept === "인사/안전관리") return "hr-safety";
   if (session.evaluatorDept && session.evaluatorRound === "1차") return "dept-1st";
   if (session.evaluatorDept && session.evaluatorRound === "2차") return "dept-2nd";
   return "guest";
@@ -1721,6 +1774,14 @@ function canSeeAverage(role)     { return role !== "dept-1st"; }              //
 function canSeeGrade(role)       { return role === "admin" || role === "exec-1st" || role === "exec-2nd"; }
 function canSeeRank(role)        { return canSeeGrade(role); }                // 등급 볼 수 있어야 순위도 의미
 function canSeeDistBar(role)     { return canSeeGrade(role); }                // S/A/B/C 분포 바 = 등급 정보
+// 가감점(근태·안전·교육) 조정 결과 열람 권한
+function canSeeAdjustment(role)       { return role === "admin" || role === "exec-1st" || role === "exec-2nd" || role === "hr-safety"; }
+function canSeeAdjustmentReason(role) { return role === "admin" || role === "exec-1st" || role === "exec-2nd" || role === "hr-safety"; }
+// 가감점 관리 화면 접근 권한
+function canManageAdjustments(role)   { return role === "hr-safety" || role === "admin"; }
+// 가감점 카테고리 (표시 순서 = 저장 순서)
+const ADJ_CATEGORIES = ["근태", "안전", "교육"];
+const ADJ_LIMIT = 3;  // 카테고리별 개인당 ±3점 상한
 
 // 반기 드롭다운 UI 렌더링 (결과 조회 화면 공용)
 function renderPeriodPickerBar(currentId) {
@@ -1754,6 +1815,7 @@ function renderDeptResultsInline(dept, container) {
   const showAvg   = canSeeAverage(role);
   const showGrade = canSeeGrade(role);
   const showDist  = canSeeDistBar(role);
+  const showAdj   = canSeeAdjustment(role);  // 조정점(가감점) 열 노출
 
   const headCells = [];
   if (showRank) headCells.push(`<th style="width:50px">순위</th>`);
@@ -1761,7 +1823,9 @@ function renderDeptResultsInline(dept, container) {
   headCells.push(`<th style="width:80px">직급</th>`);
   headCells.push(`<th style="width:80px">1차</th>`);
   if (showSec)   headCells.push(`<th style="width:80px">2차</th>`);
-  if (showAvg)   headCells.push(`<th style="width:80px">평균</th>`);
+  if (showAvg)   headCells.push(`<th style="width:80px">원평균</th>`);
+  if (showAdj)   headCells.push(`<th style="width:70px" title="근태+안전+교육 가감점 합계">조정</th>`);
+  if (showAvg)   headCells.push(`<th style="width:80px">조정평균</th>`);
   if (showGrade) headCells.push(`<th style="width:80px">등급</th>`);
   const colSpan = headCells.length;
 
@@ -1772,7 +1836,15 @@ function renderDeptResultsInline(dept, container) {
     tds.push(`<td>${esc(r.empRank)}</td>`);
     tds.push(`<td style="text-align:center">${r.score1 ?? "-"}</td>`);
     if (showSec)   tds.push(`<td style="text-align:center">${r.score2 ?? "-"}</td>`);
-    if (showAvg)   tds.push(`<td style="text-align:center"><b>${r.avg !== null ? r.avg.toFixed(1) : "-"}</b></td>`);
+    if (showAvg)   tds.push(`<td style="text-align:center">${r.avg !== null ? r.avg.toFixed(1) : "-"}</td>`);
+    if (showAdj) {
+      const adj = r.adjustment || 0;
+      const style = adj > 0 ? "color:#059669;font-weight:700"
+                    : adj < 0 ? "color:#dc2626;font-weight:700"
+                    : "color:var(--muted)";
+      tds.push(`<td style="text-align:center;${style}">${adj > 0 ? "+" + adj : (adj === 0 ? "0" : adj)}</td>`);
+    }
+    if (showAvg)   tds.push(`<td style="text-align:center"><b>${r.avgAdjusted !== null ? r.avgAdjusted.toFixed(1) : "-"}</b></td>`);
     if (showGrade) tds.push(`<td style="text-align:center">${r.grade ? `<span class="chip ${r.grade.toLowerCase()}">${r.grade}</span>` : "-"}</td>`);
     return `<tr>${tds.join("")}</tr>`;
   }).join("");
@@ -1913,6 +1985,219 @@ function logoutAdmin() {
   // 대표이사가 평가자 세션을 통해 들어온 경우 평가자 로그인까지는 유지 → 평가자 홈으로 복귀
   if (session.evaluatorDept) go("eval-home");
   else go("home");
+}
+
+/* --- 인사/안전관리 담당자: 가감점 관리 화면 --- */
+// 편집 중인 값을 담아두는 세션 저장소 (page state)
+function _adjEditKey(dept, name, cat) { return dept + "|" + name + "|" + cat; }
+
+function renderAdjustmentAdmin() {
+  if (!(session.evaluatorDept === "인사/안전관리" || session.isAdmin)) return go("home");
+  const period = getActivePeriod();
+  const role = getViewerRole();
+  // 편집 상태 초기화 (첫 진입 or 반기 변경 시)
+  if (!session.__adjEdits || session.__adjEditsPeriod !== period) {
+    session.__adjEdits = {};
+    session.__adjEditsPeriod = period;
+  }
+
+  // 대상: 일반 직원(임원 대상 제외)
+  const targets = EMPLOYEES.filter(e => !isExecEmp(e));
+  const allDepts = [...new Set(targets.map(e => e.dept))];
+
+  // 필터 상태
+  if (session.__adjFilterDept == null) session.__adjFilterDept = "";
+  if (session.__adjFilterSearch == null) session.__adjFilterSearch = "";
+  if (session.__adjFilterOnlyChanged == null) session.__adjFilterOnlyChanged = false;
+
+  $app().innerHTML = `
+    <div class="card">
+      <div class="flex between" style="flex-wrap:wrap;gap:10px">
+        <div>
+          <h2 style="margin:0">근태·안전·교육 가감점 관리</h2>
+          <div class="mini">로그인: ${esc(session.evaluatorName || "담당자")} · 카테고리별 개인당 ±${ADJ_LIMIT}점 상한</div>
+        </div>
+        <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:center">
+          <span class="period-badge">🗓 ${esc(periodLabel(period))}</span>
+          <button id="adj-save-btn" onclick="saveAdjustmentEdits()">💾 변경사항 저장 (<span id="adj-dirty-count">0</span>)</button>
+          <button class="secondary small" onclick="logoutEvaluator()">로그아웃</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="flex" style="gap:10px;flex-wrap:wrap;margin-bottom:12px;align-items:center">
+        <input id="adj-search" type="text" placeholder="🔍 이름 검색" value="${esc(session.__adjFilterSearch)}" oninput="onAdjFilterChange()" style="max-width:200px"/>
+        <select id="adj-dept" onchange="onAdjFilterChange()" style="max-width:200px">
+          <option value="">전체 부서</option>
+          ${allDepts.map(d => `<option value="${esc(d)}"${session.__adjFilterDept === d ? " selected" : ""}>${esc(d)}</option>`).join("")}
+        </select>
+        <label style="display:inline-flex;align-items:center;gap:6px;font-size:13px">
+          <input id="adj-onlychanged" type="checkbox" ${session.__adjFilterOnlyChanged ? "checked" : ""} onchange="onAdjFilterChange()" style="width:auto"/>
+          조정 있는 사람만
+        </label>
+        <span id="adj-count" class="mini" style="margin-left:auto"></span>
+      </div>
+      <div style="overflow-x:auto">
+        <table id="adj-table" class="adj-table">
+          <thead>
+            <tr>
+              <th style="width:100px">부서</th>
+              <th style="width:80px">이름</th>
+              <th style="width:60px">직급</th>
+              ${ADJ_CATEGORIES.map(c => `<th style="min-width:230px">${esc(c)} (±${ADJ_LIMIT})</th>`).join("")}
+              <th style="width:60px">합계</th>
+            </tr>
+          </thead>
+          <tbody id="adj-tbody"></tbody>
+        </table>
+      </div>
+      <div id="adj-msg" class="mini" style="margin-top:10px;color:var(--muted)"></div>
+    </div>
+  `;
+  renderAdjustmentTableBody();
+}
+
+function renderAdjustmentTableBody() {
+  const period = getActivePeriod();
+  const filterDept = session.__adjFilterDept || "";
+  const searchText = (session.__adjFilterSearch || "").trim();
+  const onlyChanged = !!session.__adjFilterOnlyChanged;
+  const targets = EMPLOYEES.filter(e => !isExecEmp(e));
+
+  // 각 직원에 대해 현재값 (편집 중이거나 서버 저장값)
+  function currentValue(dept, name, cat, field) {
+    const key = _adjEditKey(dept, name, cat);
+    if (session.__adjEdits[key] && field in session.__adjEdits[key]) {
+      return session.__adjEdits[key][field];
+    }
+    const detail = getAdjustmentDetail(period, dept, name)[cat];
+    if (detail) return field === "points" ? detail.points : detail.reason;
+    return field === "points" ? 0 : "";
+  }
+  function isChanged(emp) {
+    return ADJ_CATEGORIES.some(cat => currentValue(emp.dept, emp.name, cat, "points") !== 0 || currentValue(emp.dept, emp.name, cat, "reason").trim() !== "");
+  }
+
+  const filtered = targets.filter(e => {
+    if (filterDept && e.dept !== filterDept) return false;
+    if (searchText && !e.name.includes(searchText)) return false;
+    if (onlyChanged && !isChanged(e)) return false;
+    return true;
+  });
+
+  const rows = filtered.map(emp => {
+    const catCells = ADJ_CATEGORIES.map(cat => {
+      const pts = currentValue(emp.dept, emp.name, cat, "points");
+      const reason = currentValue(emp.dept, emp.name, cat, "reason");
+      const editKey = _adjEditKey(emp.dept, emp.name, cat);
+      return `
+        <td>
+          <div class="flex" style="gap:4px;align-items:center">
+            <input type="number" min="-${ADJ_LIMIT}" max="${ADJ_LIMIT}" step="1" value="${pts}"
+              style="width:56px;text-align:center;padding:4px 6px"
+              onchange="onAdjPointsChange('${esc(emp.dept)}','${esc(emp.name)}','${esc(cat)}',this.value)"/>
+            <input type="text" value="${esc(reason)}" placeholder="사유 (선택)"
+              style="flex:1;padding:4px 8px;font-size:12px"
+              oninput="onAdjReasonChange('${esc(emp.dept)}','${esc(emp.name)}','${esc(cat)}',this.value)"/>
+          </div>
+        </td>`;
+    }).join("");
+    const sum = ADJ_CATEGORIES.reduce((s, c) => s + (Number(currentValue(emp.dept, emp.name, c, "points")) || 0), 0);
+    const sumStyle = sum > 0 ? "color:#059669;font-weight:700"
+                    : sum < 0 ? "color:#dc2626;font-weight:700"
+                    : "color:var(--muted)";
+    return `
+      <tr data-empkey="${esc(emp.dept)}||${esc(emp.name)}">
+        <td>${esc(emp.dept)}</td>
+        <td><b>${esc(emp.name)}</b></td>
+        <td>${esc(emp.rank)}</td>
+        ${catCells}
+        <td style="text-align:center;${sumStyle}">${sum > 0 ? "+" + sum : sum}</td>
+      </tr>`;
+  }).join("");
+
+  const tbody = document.getElementById("adj-tbody");
+  if (tbody) tbody.innerHTML = rows || `<tr><td colspan="${3 + ADJ_CATEGORIES.length + 1}" style="text-align:center" class="muted">조건에 해당하는 직원이 없습니다.</td></tr>`;
+  const cntEl = document.getElementById("adj-count");
+  if (cntEl) cntEl.textContent = `${filtered.length} / ${targets.length}명 표시`;
+  updateAdjDirtyCount();
+}
+
+function onAdjFilterChange() {
+  session.__adjFilterSearch = document.getElementById("adj-search").value;
+  session.__adjFilterDept   = document.getElementById("adj-dept").value;
+  session.__adjFilterOnlyChanged = document.getElementById("adj-onlychanged").checked;
+  renderAdjustmentTableBody();
+}
+
+function onAdjPointsChange(dept, name, cat, val) {
+  const key = _adjEditKey(dept, name, cat);
+  let n = parseInt(val, 10);
+  if (isNaN(n)) n = 0;
+  if (n > ADJ_LIMIT) n = ADJ_LIMIT;
+  if (n < -ADJ_LIMIT) n = -ADJ_LIMIT;
+  if (!session.__adjEdits[key]) session.__adjEdits[key] = {};
+  session.__adjEdits[key].points = n;
+  // 즉시 재렌더 (합계 컬럼 갱신)
+  renderAdjustmentTableBody();
+}
+
+function onAdjReasonChange(dept, name, cat, val) {
+  const key = _adjEditKey(dept, name, cat);
+  if (!session.__adjEdits[key]) session.__adjEdits[key] = {};
+  session.__adjEdits[key].reason = String(val || "");
+  updateAdjDirtyCount();
+}
+
+function updateAdjDirtyCount() {
+  const period = getActivePeriod();
+  let dirty = 0;
+  Object.keys(session.__adjEdits || {}).forEach(k => {
+    const [dept, name, cat] = k.split("|");
+    const edit = session.__adjEdits[k];
+    const cur = getAdjustmentDetail(period, dept, name)[cat] || { points: 0, reason: "" };
+    const editedPts    = ("points" in edit) ? edit.points : cur.points;
+    const editedReason = ("reason" in edit) ? edit.reason : cur.reason;
+    if (editedPts !== cur.points || editedReason.trim() !== (cur.reason||"").trim()) dirty++;
+  });
+  const el = document.getElementById("adj-dirty-count");
+  if (el) el.textContent = dirty;
+}
+
+async function saveAdjustmentEdits() {
+  const period = getActivePeriod();
+  const now = new Date().toISOString();
+  const updatedBy = session.evaluatorName || "인사/안전관리";
+  const list = [];
+  Object.keys(session.__adjEdits || {}).forEach(k => {
+    const [dept, name, cat] = k.split("|");
+    const edit = session.__adjEdits[k];
+    const cur = getAdjustmentDetail(period, dept, name)[cat] || { points: 0, reason: "" };
+    const pts    = ("points" in edit) ? edit.points : cur.points;
+    const reason = ("reason" in edit) ? edit.reason : cur.reason;
+    // 변경사항만 전송
+    if (pts !== cur.points || reason.trim() !== (cur.reason||"").trim()) {
+      list.push({ period, dept, empName: name, category: cat, points: pts, reason, updatedBy, updatedAt: now });
+    }
+  });
+  if (!list.length) {
+    document.getElementById("adj-msg").innerHTML = `<span style="color:var(--warn)">변경 사항 없음</span>`;
+    return;
+  }
+  const btn = document.getElementById("adj-save-btn");
+  if (btn) { btn.disabled = true; btn.textContent = "저장 중…"; }
+  try {
+    await bulkUpsertAdjustmentsRemote(list);
+    session.__adjEdits = {};
+    document.getElementById("adj-msg").innerHTML = `<span style="color:var(--accent)">✅ ${list.length}건 저장 완료</span>`;
+    renderAdjustmentTableBody();
+  } catch (e) {
+    document.getElementById("adj-msg").innerHTML = `<span style="color:var(--danger)">저장 실패: ${esc(e.message)}</span>`;
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = `💾 변경사항 저장 (<span id="adj-dirty-count">0</span>)`; }
+    updateAdjDirtyCount();
+  }
 }
 
 /* --- 관리자 대시보드 --- */
@@ -3045,36 +3330,40 @@ function computeDeptResults(dept, period) {
     if (e1 && e2) avg = (e1.total + e2.total)/2;
     else if (e1) avg = e1.total;
     else if (e2) avg = e2.total;
+    // 가감점 조회 (원점수 유지 + 조정평균 별도)
+    const adjustment = getAdjustmentTotal(period, dept, e.name);
+    const avgAdjusted = avg !== null ? avg + adjustment : null;
     return {
       empName: e.name,
       empRank: e.rank,
       rankCategory: e.rankCategory,
       score1: e1 ? e1.total : null,
       score2: e2 ? e2.total : null,
-      avg
+      avg,                  // 원 평균 (변경 없음 · 감사 기록)
+      adjustment,           // 가감점 합계
+      avgAdjusted           // 등급 산정에 사용되는 조정 평균
     };
   });
-  // 평균 기준 정렬 (평균 없는 사람 뒤)
+  // 조정 평균 기준 정렬 (평균 없는 사람 뒤). 조정 평균이 없으면 원평균 fallback
+  const sortKey = r => (r.avgAdjusted != null ? r.avgAdjusted : r.avg);
   rows.sort((a,b) => {
-    if (a.avg === null && b.avg === null) return 0;
-    if (a.avg === null) return 1;
-    if (b.avg === null) return -1;
-    return b.avg - a.avg;
+    const ka = sortKey(a), kb = sortKey(b);
+    if (ka === null && kb === null) return 0;
+    if (ka === null) return 1;
+    if (kb === null) return -1;
+    return kb - ka;
   });
   // 부서 내 순위 및 등급 산정 (평균이 있는 인원만)
   const submitted = rows.filter(r => r.avg !== null);
   const total = submitted.length;
 
   // 부서 인원에 따라 상대평가 / 절대평가 분기
-  // - 총 부서원 수가 4명 미만이면, 비율(20/30/40/10)을 적용해도 S/A/B가 0명이 되는 문제가 있음
-  //   → 점수 기준 절대평가로 등급 부여
-  // - 부서원이 충분한 경우 기존처럼 비율 분포 적용
   const useAbsolute = emps.length < SMALL_DEPT_THRESHOLD;
 
   if (useAbsolute) {
     submitted.forEach((r, i) => {
       r.rankIndex = i + 1;
-      r.grade = gradeByAbsoluteScore(r.avg);
+      r.grade = gradeByAbsoluteScore(r.avgAdjusted !== null ? r.avgAdjusted : r.avg);
       r.gradingMode = "absolute";
     });
   } else {
@@ -3099,7 +3388,6 @@ function computeDeptResults(dept, period) {
       r.gradingMode = null;
     }
   });
-  // 부서 전체 메타 정보도 함께 반환할 수 있도록 배열에 태그
   rows._gradingMode = useAbsolute ? "absolute" : "distribution";
   rows._deptSize = emps.length;
   return rows;
@@ -3127,24 +3415,29 @@ function computeExecResults(period) {
     if (score3 !== null) parts.push(score3);
     if (score4 !== null) parts.push(score4);
     const avg = parts.length ? parts.reduce((a,b)=>a+b,0)/parts.length : null;
+    // 임원 대상자도 가감점 반영 (없으면 0)
+    const adjustment = getAdjustmentTotal(period, e.dept, e.name);
+    const avgAdjusted = avg !== null ? avg + adjustment : null;
     return {
       dept: e.dept, empName: e.name, empRank: e.rank, rankCategory: e.rankCategory,
       score3, score4, eval3Name,
       eval4Name: r4 ? r4.evaluatorName : null,
-      avg
+      avg, adjustment, avgAdjusted
     };
   });
+  const sortKey = r => (r.avgAdjusted != null ? r.avgAdjusted : r.avg);
   rows.sort((a,b) => {
-    if (a.avg === null && b.avg === null) return 0;
-    if (a.avg === null) return 1;
-    if (b.avg === null) return -1;
-    return b.avg - a.avg;
+    const ka = sortKey(a), kb = sortKey(b);
+    if (ka === null && kb === null) return 0;
+    if (ka === null) return 1;
+    if (kb === null) return -1;
+    return kb - ka;
   });
   const submitted = rows.filter(r => r.avg !== null);
   const total = submitted.length;
   const useAbsolute = emps.length < SMALL_DEPT_THRESHOLD;
   if (useAbsolute) {
-    submitted.forEach((r, i) => { r.rankIndex = i + 1; r.grade = gradeByAbsoluteScore(r.avg); r.gradingMode = "absolute"; });
+    submitted.forEach((r, i) => { r.rankIndex = i + 1; r.grade = gradeByAbsoluteScore(r.avgAdjusted !== null ? r.avgAdjusted : r.avg); r.gradingMode = "absolute"; });
   } else {
     const sCount = Math.round(total * 0.2);
     const aCount = Math.round(total * 0.3);
@@ -3231,6 +3524,10 @@ window.adminSetActivePeriod = adminSetActivePeriod;
 window.adminClosePeriod = adminClosePeriod;
 window.adminCreatePeriod = adminCreatePeriod;
 window.cmpChangePeriod = cmpChangePeriod;
+window.onAdjFilterChange = onAdjFilterChange;
+window.onAdjPointsChange = onAdjPointsChange;
+window.onAdjReasonChange = onAdjReasonChange;
+window.saveAdjustmentEdits = saveAdjustmentEdits;
 
 async function bootstrap() {
   // 초기 로딩 스피너
