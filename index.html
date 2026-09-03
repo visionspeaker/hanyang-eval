@@ -135,6 +135,20 @@
   .status-badge.ok    { background: rgba(16,185,129,0.25); border-color: rgba(16,185,129,0.4); }
   .status-badge.local { background: rgba(148,163,184,0.25); border-color: rgba(148,163,184,0.4); }
   .status-badge.err   { background: rgba(239,68,68,0.3); border-color: rgba(239,68,68,0.5); cursor: pointer; }
+  /* 반기(period) 뱃지 — 짙은 헤더 위에서도 잘 보이도록 노란 계열 */
+  .period-badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 6px 12px; border-radius: 999px;
+    background: #f59e0b; color: #1c1c1c;
+    font-size: 12px; font-weight: 700;
+    border: 1px solid rgba(0,0,0,0.05);
+    white-space: nowrap;
+  }
+  .period-badge.past { background: #94a3b8; color: #fff; }
+  .period-pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:600; border:1px solid transparent; }
+  .period-pill.active   { background:#dcfce7; color:#166534; border-color:#86efac; }
+  .period-pill.closed   { background:#f1f5f9; color:#475569; border-color:#cbd5e1; }
+  .period-pill.upcoming { background:#e0f2fe; color:#075985; border-color:#7dd3fc; }
   button.danger { background: var(--danger); }
   button.danger:hover { background: #b91c1c; }
   button.small { padding: 6px 12px; font-size: 12px; }
@@ -731,15 +745,106 @@ const FORM_STAFF = {
 
 const STORE_KEYS = {
   EVALUATIONS: "hy_evaluations_v1",
-  EVALUATORS:  "hy_evaluators_v1"
+  EVALUATORS:  "hy_evaluators_v1",
+  SETTINGS:    "hy_settings_v1"
 };
 
 const IS_REMOTE = () => !!(BACKEND_URL && BACKEND_URL.trim());
 let _cache = {
   evaluators: null,
   evaluations: null,
+  settings: null,          // { activePeriod, periods: [{id,label,status,createdAt,closedAt}] }
   remoteStatus: "unknown"  // unknown | ok | local | error
 };
+
+/* ========== 반기(period) 유틸 ==========
+ *   내부 id: "YYYY-H1" / "YYYY-H2"
+ *   표시 label: "YYYY년 상반기" / "YYYY년 하반기"
+ *   status: "active" (진행 중) | "closed" (마감됨) | "upcoming" (예정)
+ *
+ *   자동 규칙: 오늘 월 <= 6 → 상반기(H1), 그 외 → 하반기(H2)
+ *   서버의 activePeriod 가 있으면 그 값이 우선.
+ */
+function computeDefaultPeriodId(d) {
+  d = d || new Date();
+  const y = d.getFullYear();
+  const m = d.getMonth() + 1;
+  return y + (m <= 6 ? "-H1" : "-H2");
+}
+function periodLabel(id) {
+  if (!id) return "";
+  const m = String(id).match(/^(\d{4})-H([12])$/);
+  if (!m) return id;
+  return m[1] + "년 " + (m[2] === "1" ? "상반기" : "하반기");
+}
+function periodSortKey(id) {
+  const m = String(id).match(/^(\d{4})-H([12])$/);
+  if (!m) return 0;
+  return Number(m[1]) * 10 + Number(m[2]);
+}
+// settings 기본값 (첫 실행 시)
+function makeDefaultSettings() {
+  const now = new Date();
+  const cur = computeDefaultPeriodId(now);
+  const nowIso = now.toISOString();
+  const periods = [];
+  // 지금이 하반기라면 상반기(마감), 하반기(활성) 두 개를 기본 세팅해서
+  // 기존에 이미 있는 상반기 데이터를 자연스럽게 조회할 수 있게 함.
+  if (/H2$/.test(cur)) {
+    const h1 = cur.replace("H2","H1");
+    periods.push({ id: h1, status: "closed", createdAt: nowIso, closedAt: nowIso });
+  }
+  periods.push({ id: cur, status: "active", createdAt: nowIso, closedAt: null });
+  return { activePeriod: cur, periods };
+}
+// 저장된 settings 를 정합성 있게 정리 (누락된 활성/미마감 처리, 정렬)
+function normalizeSettings(s) {
+  const src = s && typeof s === "object" ? s : {};
+  const periods = Array.isArray(src.periods) ? src.periods.slice() : [];
+  const seen = {};
+  const cleaned = [];
+  periods.forEach(p => {
+    if (!p || !p.id || seen[p.id]) return;
+    seen[p.id] = true;
+    cleaned.push({
+      id: String(p.id),
+      status: (p.status === "closed" || p.status === "upcoming" || p.status === "active") ? p.status : "active",
+      createdAt: p.createdAt || null,
+      closedAt: p.closedAt || null
+    });
+  });
+  let active = src.activePeriod || null;
+  if (active && !seen[active]) {
+    cleaned.push({ id: active, status: "active", createdAt: new Date().toISOString(), closedAt: null });
+    seen[active] = true;
+  }
+  if (!active) {
+    const openOne = cleaned.find(p => p.status === "active");
+    active = openOne ? openOne.id : (cleaned[0] ? cleaned[0].id : computeDefaultPeriodId());
+    if (!seen[active]) cleaned.push({ id: active, status: "active", createdAt: new Date().toISOString(), closedAt: null });
+  }
+  // active 반기는 status=active 로 강제 정합 (다른 것은 그대로 유지 하되 active 표시 유일화)
+  cleaned.forEach(p => {
+    if (p.id === active) p.status = "active";
+    else if (p.status === "active") p.status = "closed";
+  });
+  cleaned.sort((a,b) => periodSortKey(b.id) - periodSortKey(a.id)); // 최신이 위로
+  return { activePeriod: active, periods: cleaned };
+}
+function getSettings() {
+  if (!_cache.settings) _cache.settings = normalizeSettings(makeDefaultSettings());
+  return _cache.settings;
+}
+function getActivePeriod() { return getSettings().activePeriod; }
+function isPeriodClosed(id) {
+  const p = getSettings().periods.find(x => x.id === id);
+  return !!(p && p.status === "closed");
+}
+function isPeriodEditable(id) {
+  // 활성 반기는 항상 편집 가능, 마감된 반기는 관리자만 편집 가능
+  if (id === getActivePeriod()) return true;
+  return !!session.isAdmin;
+}
 
 function loadStore(key, fallback) {
   try {
@@ -794,7 +899,9 @@ async function initData() {
         });
       });
       _cache.evaluators  = mergedEvs;
-      _cache.evaluations = data.evaluations || [];
+      _cache.evaluations = (data.evaluations || []).map(fillEvaluationPeriod);
+      // 서버 settings 우선, 없으면 기존 데이터로부터 자동 유추
+      _cache.settings    = normalizeSettings(data.settings || deriveSettingsFromEvaluations(_cache.evaluations));
       _cache.remoteStatus = "ok";
       return;
     } catch (e) {
@@ -803,14 +910,46 @@ async function initData() {
       _cache.remoteError = e.message;
       // 원격 실패 시 로컬 캐시로 폴백하되, 원격 모드임을 유지
       _cache.evaluators = loadStore(STORE_KEYS.EVALUATORS, JSON.parse(JSON.stringify(DEFAULT_EVALUATORS)));
-      _cache.evaluations = loadStore(STORE_KEYS.EVALUATIONS, []);
+      _cache.evaluations = loadStore(STORE_KEYS.EVALUATIONS, []).map(fillEvaluationPeriod);
+      _cache.settings   = normalizeSettings(loadStore(STORE_KEYS.SETTINGS, deriveSettingsFromEvaluations(_cache.evaluations)));
       return;
     }
   }
   // 로컬 모드
   _cache.evaluators  = loadStore(STORE_KEYS.EVALUATORS, JSON.parse(JSON.stringify(DEFAULT_EVALUATORS)));
-  _cache.evaluations = loadStore(STORE_KEYS.EVALUATIONS, []);
+  _cache.evaluations = loadStore(STORE_KEYS.EVALUATIONS, []).map(fillEvaluationPeriod);
+  _cache.settings   = normalizeSettings(loadStore(STORE_KEYS.SETTINGS, deriveSettingsFromEvaluations(_cache.evaluations)));
   _cache.remoteStatus = "local";
+}
+
+// 기존 데이터(period 없이 저장됐던 행) 마이그레이션 — 현재 앱 세션 안에서만 적용
+function fillEvaluationPeriod(ev) {
+  if (!ev || typeof ev !== "object") return ev;
+  if (ev.period && String(ev.period).trim()) return ev;
+  // period 가 없으면 기존 데이터로 간주 → "2026-H1"
+  ev.period = "2026-H1";
+  return ev;
+}
+
+// evaluations 안의 period 값들을 스캔해 settings 를 유추 (서버 응답에 settings 없을 때)
+function deriveSettingsFromEvaluations(evals) {
+  const seen = {};
+  (evals || []).forEach(e => {
+    const p = e && e.period;
+    if (p) seen[p] = true;
+  });
+  const now = new Date();
+  const cur = computeDefaultPeriodId(now);
+  seen[cur] = true;
+  const ids = Object.keys(seen).sort((a,b) => periodSortKey(a) - periodSortKey(b));
+  const nowIso = now.toISOString();
+  const periods = ids.map(id => ({
+    id,
+    status: id === cur ? "active" : "closed",
+    createdAt: nowIso,
+    closedAt: id === cur ? null : nowIso
+  }));
+  return { activePeriod: cur, periods };
 }
 
 /* ---- 동기 getter (기존 코드 경로와 호환) ---- */
@@ -821,10 +960,16 @@ function getEvaluators() {
 function getEvaluations() {
   return _cache.evaluations || [];
 }
-function getEvaluation(dept, empName, round) {
+function getEvaluation(dept, empName, round, period) {
+  const p = period || getActivePeriod();
   return getEvaluations().find(x =>
-    x.dept === dept && x.empName === empName && x.round === round
+    x.dept === dept && x.empName === empName && x.round === round && (x.period || "2026-H1") === p
   );
+}
+// 특정 반기의 평가만 반환 (없으면 활성 반기)
+function getEvaluationsByPeriod(period) {
+  const p = period || getActivePeriod();
+  return getEvaluations().filter(x => (x.period || "2026-H1") === p);
 }
 
 /* ---- 비동기 writer (원격 모드면 서버로 전송, 아니면 로컬스토리지) ---- */
@@ -846,9 +991,11 @@ async function setEvaluations(v) {
 }
 
 async function upsertEvaluation(ev) {
+  // period 미지정 시 활성 반기로 자동 채움
+  if (!ev.period) ev.period = getActivePeriod();
   const all = _cache.evaluations || [];
   const idx = all.findIndex(x =>
-    x.dept === ev.dept && x.empName === ev.empName && x.round === ev.round
+    x.dept === ev.dept && x.empName === ev.empName && x.round === ev.round && (x.period || "2026-H1") === ev.period
   );
   if (idx >= 0) all[idx] = ev; else all.push(ev);
   _cache.evaluations = all;
@@ -860,10 +1007,13 @@ async function upsertEvaluation(ev) {
 }
 
 async function bulkUpsertEvaluations(list) {
+  // period 자동 채움
+  const active = getActivePeriod();
+  list.forEach(ev => { if (!ev.period) ev.period = active; });
   // 캐시 병합
   const all = _cache.evaluations || [];
   list.forEach(ev => {
-    const idx = all.findIndex(x => x.dept === ev.dept && x.empName === ev.empName && x.round === ev.round);
+    const idx = all.findIndex(x => x.dept === ev.dept && x.empName === ev.empName && x.round === ev.round && (x.period || "2026-H1") === ev.period);
     if (idx >= 0) all[idx] = ev; else all.push(ev);
   });
   _cache.evaluations = all;
@@ -872,6 +1022,62 @@ async function bulkUpsertEvaluations(list) {
   } else {
     saveStore(STORE_KEYS.EVALUATIONS, all);
   }
+}
+
+/* ---- 반기 관리 (서버 액션 or 로컬 저장) ---- */
+async function setActivePeriodRemote(periodId) {
+  const s = getSettings();
+  // 존재 안 하면 upcoming/closed 상태로라도 추가
+  if (!s.periods.find(p => p.id === periodId)) {
+    s.periods.push({ id: periodId, status: "closed", createdAt: new Date().toISOString(), closedAt: null });
+  }
+  s.activePeriod = periodId;
+  _cache.settings = normalizeSettings(s);
+  if (IS_REMOTE()) {
+    try { await remotePost("setActivePeriod", { period: periodId }); } catch(e) { console.error(e); }
+  } else {
+    saveStore(STORE_KEYS.SETTINGS, _cache.settings);
+  }
+}
+async function createPeriodRemote(periodId, activate) {
+  const s = getSettings();
+  if (!s.periods.find(p => p.id === periodId)) {
+    s.periods.push({ id: periodId, status: activate ? "active" : "upcoming", createdAt: new Date().toISOString(), closedAt: null });
+  }
+  if (activate) s.activePeriod = periodId;
+  _cache.settings = normalizeSettings(s);
+  if (IS_REMOTE()) {
+    try { await remotePost("createPeriod", { period: periodId, activate: !!activate }); } catch(e) { console.error(e); }
+  } else {
+    saveStore(STORE_KEYS.SETTINGS, _cache.settings);
+  }
+}
+async function closePeriodRemote(periodId) {
+  const s = getSettings();
+  const p = s.periods.find(x => x.id === periodId);
+  if (p) { p.status = "closed"; p.closedAt = new Date().toISOString(); }
+  // 활성 반기가 방금 마감된 것이면, 자동으로 다음 반기(오늘 기준) 를 활성화
+  if (s.activePeriod === periodId) {
+    const nextId = computeDefaultPeriodId();
+    if (nextId === periodId) {
+      // 오늘 반기와 동일하면 활성 반기 유지 (아무것도 없음)
+    } else {
+      if (!s.periods.find(x => x.id === nextId)) {
+        s.periods.push({ id: nextId, status: "active", createdAt: new Date().toISOString(), closedAt: null });
+      }
+      s.activePeriod = nextId;
+    }
+  }
+  _cache.settings = normalizeSettings(s);
+  if (IS_REMOTE()) {
+    try { await remotePost("closePeriod", { period: periodId }); } catch(e) { console.error(e); }
+  } else {
+    saveStore(STORE_KEYS.SETTINGS, _cache.settings);
+  }
+}
+async function reopenPeriodRemote(periodId) {
+  // 마감된 반기를 다시 활성으로 (관리자만 수정 가능하게 하려면 setActivePeriod 로 대체 가능)
+  return setActivePeriodRemote(periodId);
 }
 
 async function clearAllEvaluationsRemote() {
@@ -902,7 +1108,8 @@ let session = {
   isAdmin: false,
   view: "home",       // home | eval-login | eval-home | eval-form | eval-view | admin-login | admin-home
   selectedEmp: null,
-  adminTab: "results", // results | accounts | settings
+  adminTab: "results", // results | dept | accounts | data | periods | compare | security
+  viewPeriod: null    // 결과 조회에서 사용자가 선택한 반기 (null 이면 활성 반기)
 };
 
 /* ==== 렌더링 ==== */
@@ -957,6 +1164,12 @@ function go(view) {
   render();
 }
 
+// 결과 조회 반기 드롭다운에서 호출
+function setViewPeriod(periodId) {
+  session.viewPeriod = periodId || null;
+  render();
+}
+
 function render() {
   renderTopActions();
   const v = session.view;
@@ -984,7 +1197,7 @@ function renderHome() {
         </span>
         <h1>인사평가 시스템</h1>
       </div>
-      <div class="hero-sub">2026년 상반기 업무수행 평가</div>
+      <div class="hero-sub">${esc(periodLabel(getActivePeriod()))} 업무수행 평가 · 진행 중</div>
     </div>
 
     <div class="landing-wrap">
@@ -1169,7 +1382,8 @@ function renderEvalHome() {
   if (!session.evaluatorDept) return go("eval-login");
   const dept = session.evaluatorDept;
   const round = session.evaluatorRound;
-  const evals = getEvaluations();
+  const activePeriod = getActivePeriod();
+  const evals = getEvaluationsByPeriod(activePeriod);
   let targets;
   if (dept === "임원") {
     // 3차/4차 평가자 — EXEC_TARGETS 에 정의된 대상만 평가
@@ -1198,7 +1412,8 @@ function renderEvalHome() {
           <h2 style="margin:0">${esc(dept)} · ${esc(titleRound)} 평가자</h2>
           <div class="mini">로그인: ${esc(session.evaluatorName)}</div>
         </div>
-        <div class="flex" style="gap:8px">
+        <div class="flex" style="gap:8px;flex-wrap:wrap;justify-content:flex-end;align-items:center">
+          <span class="period-badge">🗓 ${esc(periodLabel(getActivePeriod()))} 평가 진행 중</span>
           ${evaluatorHasAdminRight() ? `<button class="small" onclick="go('admin-home')" title="전체 평가 내용을 확인할 수 있습니다">🛠 관리자 대시보드</button>` : ``}
           <button class="secondary small" onclick="logoutEvaluator()">로그아웃</button>
         </div>
@@ -1245,7 +1460,7 @@ function setEvalTab(which) {
       targets = EMPLOYEES.filter(e => e.dept === dept && !isExecEmp(e))
         .filter(e => !(e.name === getCurrentEvaluatorName(dept, round)));
     }
-    const evals = getEvaluations();
+    const evals = getEvaluationsByPeriod(getActivePeriod());
     const doneMap = {};
     targets.forEach(t => {
       doneMap[t.name] = !!evals.find(x => x.dept===t.dept && x.empName===t.name && x.round===round);
@@ -1303,21 +1518,23 @@ function renderEvalForm() {
   const emp = EMPLOYEES.find(e => e.dept === empDept && e.name === empName);
   if (!emp) return go("eval-home");
   const form = emp.rankCategory === "과장이상" ? FORM_MANAGER : FORM_STAFF;
-  const existing = getEvaluation(empDept, empName, round);
+  const activePeriod = getActivePeriod();
+  const existing = getEvaluation(empDept, empName, round, activePeriod);
   $app().innerHTML = `
     <div class="card">
       <div class="flex between">
         <div>
           <h2 style="margin:0">${esc(form.title)}</h2>
-          <div class="mini">${esc(empDept)} · ${esc(emp.name)} ${esc(emp.rank)} · ${esc(displayRound(round))} 평가자: ${esc(session.evaluatorName)}</div>
+          <div class="mini">${esc(empDept)} · ${esc(emp.name)} ${esc(emp.rank)} · ${esc(displayRound(round))} 평가자: ${esc(session.evaluatorName)} · <b>${esc(periodLabel(activePeriod))}</b></div>
         </div>
-        <div>
+        <div class="flex" style="gap:8px">
+          <span class="period-badge">🗓 ${esc(periodLabel(activePeriod))}</span>
           <button class="secondary small" onclick="go('eval-home')">← 목록</button>
         </div>
       </div>
     </div>
     <div class="card">
-      ${existing ? `<div class="notice info">이미 저장된 평가가 있습니다. 수정 후 다시 제출하면 갱신됩니다.</div>` : ""}
+      ${existing ? `<div class="notice info">이미 <b>${esc(periodLabel(activePeriod))}</b>에 저장된 평가가 있습니다. 수정 후 다시 제출하면 갱신됩니다.</div>` : ""}
       <div id="form-err"></div>
       <form id="eval-form" onsubmit="event.preventDefault();submitEval();">
         <table class="eval-table">
@@ -1416,6 +1633,14 @@ async function submitEval() {
   const empDept = session.selectedEmpDept || session.evaluatorDept;
   const emp = EMPLOYEES.find(e => e.dept === empDept && e.name === empName);
   const form = emp.rankCategory === "과장이상" ? FORM_MANAGER : FORM_STAFF;
+  const activePeriod = getActivePeriod();
+  // 안전장치: 활성 반기가 어떤 이유로든 마감 상태라면 제출 차단
+  if (isPeriodClosed(activePeriod) && !session.isAdmin) {
+    document.getElementById("form-err").innerHTML =
+      `<div class="notice err">현재 반기가 마감된 상태입니다. 관리자에게 문의해 주세요.</div>`;
+    window.scrollTo({top:0,behavior:"smooth"});
+    return;
+  }
   const scores = {};
   let missing = [];
   form.areas.forEach(area => {
@@ -1440,6 +1665,7 @@ async function submitEval() {
   const ev = {
     dept: empDept, empName, empRank: emp.rank, rankCategory: emp.rankCategory,
     round,
+    period: activePeriod,
     evaluatorName: session.evaluatorName,
     scores, total, comment,
     submittedAt: new Date().toISOString()
@@ -1458,13 +1684,36 @@ async function submitEval() {
   }
 }
 
+// 결과 조회에서 사용할 반기 결정 (사용자가 드롭다운으로 고른 값 우선)
+function resolveViewPeriod() {
+  return session.viewPeriod || getActivePeriod();
+}
+
+// 반기 드롭다운 UI 렌더링 (결과 조회 화면 공용)
+function renderPeriodPickerBar(currentId) {
+  const s = getSettings();
+  const active = s.activePeriod;
+  const opts = s.periods.map(p => {
+    const label = periodLabel(p.id) + (p.id === active ? " · 진행 중" : (p.status === "closed" ? " · 마감" : ""));
+    return `<option value="${esc(p.id)}"${p.id === currentId ? " selected" : ""}>${esc(label)}</option>`;
+  }).join("");
+  return `
+    <div class="flex" style="gap:8px;align-items:center;margin:0 0 12px;flex-wrap:wrap">
+      <span class="mini" style="color:var(--muted)">조회 반기</span>
+      <select onchange="setViewPeriod(this.value)" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px">${opts}</select>
+      ${currentId !== active ? `<span class="chip" style="background:#f1f5f9;color:#475569;border:1px solid #cbd5e1">지난 반기 조회 중</span>` : `<span class="chip" style="background:#dcfce7;color:#166534;border:1px solid #86efac">진행 중</span>`}
+    </div>
+  `;
+}
+
 /* --- 평가자: 본인 부서 결과 조회 (인라인) --- */
 function renderDeptResultsInline(dept, container) {
   if (dept === "임원") {
     return renderExecResultsInline(container);
   }
+  const period = resolveViewPeriod();
   const emps = EMPLOYEES.filter(e => e.dept === dept && !isExecEmp(e));
-  const results = computeDeptResults(dept);
+  const results = computeDeptResults(dept, period);
   const rows = results.map(r => `
     <tr>
       <td>${r.rankIndex}</td>
@@ -1478,7 +1727,8 @@ function renderDeptResultsInline(dept, container) {
   `).join("");
   const dist = gradeDistribution(results);
   container.innerHTML = `
-    <div class="notice info">우리 부서 (<b>${esc(dept)}</b>) 의 평가 결과만 열람할 수 있습니다. 전사 결과는 관리자만 조회 가능합니다.</div>
+    ${renderPeriodPickerBar(period)}
+    <div class="notice info">우리 부서 (<b>${esc(dept)}</b>) 의 <b>${esc(periodLabel(period))}</b> 평가 결과만 열람할 수 있습니다. 전사 결과는 관리자만 조회 가능합니다.</div>
     <div class="stat-grid">
       <div class="stat-box"><div class="label">평가 대상</div><div class="value">${emps.length}명</div></div>
       <div class="stat-box"><div class="label">제출 완료</div><div class="value">${results.filter(r => r.avg !== null).length}</div></div>
@@ -1504,7 +1754,8 @@ function renderDeptResultsInline(dept, container) {
 
 /* --- 평가자: 임원(부장·이사) 평가 결과 조회 --- */
 function renderExecResultsInline(container) {
-  const results = computeExecResults();
+  const period = resolveViewPeriod();
+  const results = computeExecResults(period);
   const totalTargets = EMPLOYEES.filter(isExecEmp).length;
   const rows = results.map(r => `
     <tr>
@@ -1520,7 +1771,8 @@ function renderExecResultsInline(container) {
   `).join("");
   const dist = gradeDistribution(results);
   container.innerHTML = `
-    <div class="notice info">임원(부장·이사) 평가 결과는 1차(부사장)/2차(대표이사) 평가자 본인만 열람할 수 있습니다. 전사 결과는 관리자만 조회 가능합니다.</div>
+    ${renderPeriodPickerBar(period)}
+    <div class="notice info">임원(부장·이사) <b>${esc(periodLabel(period))}</b> 평가 결과는 1차(부사장)/2차(대표이사) 평가자 본인만 열람할 수 있습니다. 전사 결과는 관리자만 조회 가능합니다.</div>
     <div class="stat-grid">
       <div class="stat-box"><div class="label">평가 대상</div><div class="value">${totalTargets}명</div></div>
       <div class="stat-box"><div class="label">제출 완료</div><div class="value">${results.filter(r => r.avg !== null).length}</div></div>
@@ -1592,9 +1844,10 @@ function renderAdminHome() {
       <div class="flex between">
         <div>
           <h2 style="margin:0">관리자 대시보드</h2>
-          <div class="mini">전체 평가결과 · 부서별 분포 · 평가자 계정${session.evaluatorDept === "임원" && session.evaluatorRound === "4차" ? ` · 대표이사 열람 중 (${esc(session.evaluatorName||"")})` : ``}</div>
+          <div class="mini">전체 평가결과 · 부서별 분포 · 평가자 계정 · 반기 관리${session.evaluatorDept === "임원" && session.evaluatorRound === "4차" ? ` · 대표이사 열람 중 (${esc(session.evaluatorName||"")})` : ``}</div>
         </div>
-        <div class="flex" style="gap:8px">
+        <div class="flex" style="gap:8px;flex-wrap:wrap;justify-content:flex-end;align-items:center">
+          <span class="period-badge">🗓 활성: ${esc(periodLabel(getActivePeriod()))}</span>
           ${session.evaluatorDept === "임원" && session.evaluatorRound === "4차" ? `<button class="secondary small" onclick="go('eval-home')">← 평가자 화면</button>` : ``}
           <button class="secondary small" onclick="logoutAdmin()">로그아웃</button>
         </div>
@@ -1606,6 +1859,8 @@ function renderAdminHome() {
         <div class="tab ${tab==='dept'?'active':''}"    onclick="setAdminTab('dept')">부서별 분포</div>
         <div class="tab ${tab==='accounts'?'active':''}" onclick="setAdminTab('accounts')">평가자 계정</div>
         <div class="tab ${tab==='data'?'active':''}"     onclick="setAdminTab('data')">데이터 / 내보내기</div>
+        <div class="tab ${tab==='periods'?'active':''}"  onclick="setAdminTab('periods')">반기 관리</div>
+        <div class="tab ${tab==='compare'?'active':''}"  onclick="setAdminTab('compare')">반기 비교</div>
         <div class="tab ${tab==='security'?'active':''}" onclick="setAdminTab('security')">보안</div>
       </div>
       <div id="admin-body"></div>
@@ -1617,7 +1872,7 @@ function renderAdminHome() {
 function setAdminTab(tab) {
   session.adminTab = tab;
   document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
-  const map = { results:0, dept:1, accounts:2, data:3, security:4 };
+  const map = { results:0, dept:1, accounts:2, data:3, periods:4, compare:5, security:6 };
   const tabs = document.querySelectorAll(".tab");
   if (tabs[map[tab]]) tabs[map[tab]].classList.add("active");
   const body = document.getElementById("admin-body");
@@ -1625,7 +1880,293 @@ function setAdminTab(tab) {
   else if (tab === "dept") renderAdminDeptDist(body);
   else if (tab === "accounts") renderAdminAccounts(body);
   else if (tab === "data") renderAdminData(body);
+  else if (tab === "periods") renderAdminPeriods(body);
+  else if (tab === "compare") renderAdminCompare(body);
   else if (tab === "security") renderAdminSecurity(body);
+}
+
+/* --- 관리자: 반기 관리 --- */
+function renderAdminPeriods(body) {
+  const s = getSettings();
+  const active = s.activePeriod;
+  const evs = getEvaluations();
+  const totalTargets =
+    EMPLOYEES.filter(e => !isExecEmp(e)).length * 2  // 일반 직원 × (1차+2차) 대략
+    + EXEC_TARGETS["3차-조규오"].length + EXEC_TARGETS["3차-임웅걸"].length + EXEC_TARGETS["4차"].length;
+  const rows = s.periods.map(p => {
+    const cntAll = evs.filter(e => (e.period||"2026-H1") === p.id).length;
+    const pill = p.status === "active"
+      ? `<span class="period-pill active">활성 · 진행 중</span>`
+      : p.status === "closed"
+        ? `<span class="period-pill closed">마감됨</span>`
+        : `<span class="period-pill upcoming">예정</span>`;
+    const actions = [];
+    if (p.id !== active) actions.push(`<button class="small secondary" onclick="adminSetActivePeriod('${esc(p.id)}')">이 반기 활성화</button>`);
+    if (p.status !== "closed" && p.id !== active) actions.push(`<button class="small ghost" onclick="adminClosePeriod('${esc(p.id)}')">마감</button>`);
+    if (p.status === "active" && p.id === active) actions.push(`<button class="small ghost" onclick="adminClosePeriod('${esc(p.id)}')">마감</button>`);
+    if (p.status === "closed") actions.push(`<button class="small ghost" onclick="adminSetActivePeriod('${esc(p.id)}')">재개</button>`);
+    return `
+      <tr>
+        <td><b>${esc(periodLabel(p.id))}</b> <span class="mini">${esc(p.id)}</span></td>
+        <td>${pill}</td>
+        <td style="text-align:center">${cntAll}건</td>
+        <td>${p.createdAt ? esc(new Date(p.createdAt).toLocaleDateString('ko-KR')) : "-"}</td>
+        <td>${p.closedAt ? esc(new Date(p.closedAt).toLocaleDateString('ko-KR')) : "-"}</td>
+        <td style="white-space:nowrap">${actions.join(" ")}</td>
+      </tr>
+    `;
+  }).join("");
+  const nowYear = new Date().getFullYear();
+  body.innerHTML = `
+    <div class="notice info" style="margin-bottom:14px">
+      현재 <b>활성 반기</b>: <b style="color:var(--primary)">${esc(periodLabel(active))}</b> · 신규 평가 제출은 <b>활성 반기</b>에만 저장됩니다.
+      지난 반기의 결과는 그대로 보존되며, 관리자가 필요 시 <b>재개</b>해서 수정할 수 있습니다.
+    </div>
+
+    <h3>반기 목록</h3>
+    <div style="overflow-x:auto">
+    <table>
+      <thead><tr>
+        <th>반기</th><th>상태</th><th style="width:80px">제출건수</th>
+        <th style="width:120px">생성일</th><th style="width:120px">마감일</th><th>관리</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    </div>
+
+    <h3 style="margin-top:24px">새 반기 생성</h3>
+    <div class="flex" style="gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:6px">
+      <div>
+        <label class="mini">연도</label>
+        <input id="new-period-year" type="number" min="2020" max="2099" value="${nowYear}" style="width:100px"/>
+      </div>
+      <div>
+        <label class="mini">반기</label>
+        <select id="new-period-half">
+          <option value="H1">상반기 (H1)</option>
+          <option value="H2" selected>하반기 (H2)</option>
+        </select>
+      </div>
+      <div>
+        <label class="mini" style="display:block">&nbsp;</label>
+        <label style="display:flex;gap:6px;align-items:center;font-size:13px">
+          <input id="new-period-activate" type="checkbox" checked/> 만들면서 바로 활성 반기로 지정
+        </label>
+      </div>
+      <button onclick="adminCreatePeriod()">반기 생성</button>
+    </div>
+    <div id="periods-msg"></div>
+  `;
+}
+
+async function adminSetActivePeriod(periodId) {
+  if (!confirm(periodLabel(periodId) + " 를 활성 반기로 지정합니다. 신규 제출은 이 반기에 저장됩니다.\n계속할까요?")) return;
+  await setActivePeriodRemote(periodId);
+  session.viewPeriod = null; // 조회 반기도 초기화 (활성 반기 따라감)
+  renderAdminPeriods(document.getElementById("admin-body"));
+  // 헤더 뱃지 갱신을 위해 관리자 홈 재렌더
+  renderAdminHome();
+  setAdminTab("periods");
+}
+async function adminClosePeriod(periodId) {
+  if (!confirm(periodLabel(periodId) + " 를 마감합니다. 이후에는 관리자만 수정 가능합니다.\n계속할까요?")) return;
+  await closePeriodRemote(periodId);
+  renderAdminHome();
+  setAdminTab("periods");
+}
+async function adminCreatePeriod() {
+  const y = parseInt(document.getElementById("new-period-year").value, 10);
+  const h = document.getElementById("new-period-half").value;
+  const activate = document.getElementById("new-period-activate").checked;
+  if (!y || !h) return;
+  const id = y + "-" + h;
+  const msg = document.getElementById("periods-msg");
+  if (getSettings().periods.find(p => p.id === id)) {
+    msg.innerHTML = `<div class="notice warn">이미 존재하는 반기입니다: ${esc(periodLabel(id))}</div>`;
+    return;
+  }
+  await createPeriodRemote(id, activate);
+  msg.innerHTML = `<div class="notice ok">생성됨: ${esc(periodLabel(id))}${activate ? " · 활성화" : ""}</div>`;
+  renderAdminHome();
+  setAdminTab("periods");
+}
+
+/* --- 관리자: 반기 비교 (Chart.js) --- */
+let _chartLibLoading = null;
+function ensureChartJs() {
+  if (window.Chart) return Promise.resolve();
+  if (_chartLibLoading) return _chartLibLoading;
+  _chartLibLoading = new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js";
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error("Chart.js 로드 실패"));
+    document.head.appendChild(s);
+  });
+  return _chartLibLoading;
+}
+
+function renderAdminCompare(body) {
+  const s = getSettings();
+  const active = s.activePeriod;
+  // 기본값: 활성 반기 vs 그 이전 반기
+  const sorted = s.periods.slice().sort((a,b) => periodSortKey(b.id) - periodSortKey(a.id));
+  const defA = sorted[0] ? sorted[0].id : active;
+  const defB = sorted[1] ? sorted[1].id : (sorted[0] ? sorted[0].id : active);
+  if (!session._cmpA) session._cmpA = defA;
+  if (!session._cmpB) session._cmpB = defB;
+
+  const opts = s.periods.map(p =>
+    `<option value="${esc(p.id)}">${esc(periodLabel(p.id))}${p.id===active ? " (진행 중)" : (p.status==="closed" ? " (마감)" : "")}</option>`
+  ).join("");
+
+  body.innerHTML = `
+    <div class="notice info" style="margin-bottom:14px">
+      두 반기를 골라 부서·임원별 <b>평균 점수</b>와 <b>등급 분포</b>를 비교합니다. 이 화면은 관리자만 열람 가능합니다.
+    </div>
+    <div class="flex" style="gap:14px;flex-wrap:wrap;margin-bottom:14px;align-items:flex-end">
+      <div>
+        <label class="mini">기준 반기 (A)</label>
+        <select id="cmp-a" onchange="cmpChangePeriod('A', this.value)">
+          ${opts.replace(new RegExp(`value="${escRegex(session._cmpA)}"`), `value="${esc(session._cmpA)}" selected`)}
+        </select>
+      </div>
+      <div>
+        <label class="mini">비교 반기 (B)</label>
+        <select id="cmp-b" onchange="cmpChangePeriod('B', this.value)">
+          ${opts.replace(new RegExp(`value="${escRegex(session._cmpB)}"`), `value="${esc(session._cmpB)}" selected`)}
+        </select>
+      </div>
+    </div>
+
+    <h3 style="margin-top:8px">부서별 평균 점수 (A vs B)</h3>
+    <div style="max-width:100%;overflow-x:auto"><canvas id="cmp-chart-avg" height="120"></canvas></div>
+
+    <h3 style="margin-top:24px">등급 분포 (A / B, 전사+임원 통합)</h3>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+      <div><canvas id="cmp-chart-distA" height="140"></canvas><div class="mini" style="text-align:center">A: ${esc(periodLabel(session._cmpA))}</div></div>
+      <div><canvas id="cmp-chart-distB" height="140"></canvas><div class="mini" style="text-align:center">B: ${esc(periodLabel(session._cmpB))}</div></div>
+    </div>
+
+    <h3 style="margin-top:24px">사원별 등급 변화 (A → B)</h3>
+    <div style="overflow-x:auto"><table id="cmp-table">
+      <thead><tr><th>부서</th><th>이름</th><th>직급</th><th>A 등급</th><th>B 등급</th><th>변화</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+  `;
+
+  ensureChartJs().then(() => renderCompareCharts()).catch(e => {
+    body.insertAdjacentHTML("beforeend", `<div class="notice err">차트 로드 실패: ${esc(e.message)}</div>`);
+  });
+}
+
+// 정규식용 이스케이프 (반기 id 안전)
+function escRegex(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+
+function cmpChangePeriod(which, v) {
+  if (which === "A") session._cmpA = v; else session._cmpB = v;
+  renderAdminCompare(document.getElementById("admin-body"));
+}
+
+function _collectPeriodResults(periodId) {
+  const depts = [...new Set(EMPLOYEES.filter(e => !isExecEmp(e)).map(e => e.dept))];
+  const dept = {};
+  depts.forEach(d => { dept[d] = computeDeptResults(d, periodId); });
+  const exec = computeExecResults(periodId);
+  const dist = { S:0, A:0, B:0, C:0 };
+  const empGrade = {};
+  Object.entries(dept).forEach(([d, rows]) => {
+    rows.forEach(r => {
+      if (r.grade) dist[r.grade] = (dist[r.grade]||0) + 1;
+      if (r.grade) empGrade[d + "|" + r.empName] = r.grade;
+    });
+  });
+  exec.forEach(r => {
+    if (r.grade) dist[r.grade] = (dist[r.grade]||0) + 1;
+    if (r.grade) empGrade[r.dept + "|" + r.empName] = r.grade;
+  });
+  return { dept, exec, dist, empGrade };
+}
+
+let _cmpCharts = { avg: null, distA: null, distB: null };
+function renderCompareCharts() {
+  const a = session._cmpA, b = session._cmpB;
+  const A = _collectPeriodResults(a);
+  const B = _collectPeriodResults(b);
+  const depts = Object.keys(A.dept);
+  const avgA = depts.map(d => {
+    const vals = A.dept[d].map(r => r.avg).filter(v => v!==null);
+    return vals.length ? vals.reduce((x,y)=>x+y,0)/vals.length : 0;
+  });
+  const avgB = depts.map(d => {
+    const vals = B.dept[d].map(r => r.avg).filter(v => v!==null);
+    return vals.length ? vals.reduce((x,y)=>x+y,0)/vals.length : 0;
+  });
+  // 임원 평균도 함께
+  const execAvgA = (() => { const v = A.exec.map(r=>r.avg).filter(x=>x!==null); return v.length ? v.reduce((x,y)=>x+y,0)/v.length : 0; })();
+  const execAvgB = (() => { const v = B.exec.map(r=>r.avg).filter(x=>x!==null); return v.length ? v.reduce((x,y)=>x+y,0)/v.length : 0; })();
+  const labels = depts.concat(["임원 풀"]);
+  const dataA = avgA.concat([execAvgA]);
+  const dataB = avgB.concat([execAvgB]);
+
+  if (_cmpCharts.avg) _cmpCharts.avg.destroy();
+  _cmpCharts.avg = new Chart(document.getElementById("cmp-chart-avg").getContext("2d"), {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [
+        { label: periodLabel(a), data: dataA.map(x=>Number(x.toFixed(1))), backgroundColor: "#1e3a8a" },
+        { label: periodLabel(b), data: dataB.map(x=>Number(x.toFixed(1))), backgroundColor: "#f59e0b" }
+      ]
+    },
+    options: { responsive: true, scales: { y: { beginAtZero: true, max: 100 } } }
+  });
+
+  const distCfg = (dist, color) => ({
+    type: "doughnut",
+    data: {
+      labels: ["S","A","B","C"],
+      datasets: [{ data: [dist.S, dist.A, dist.B, dist.C], backgroundColor: color }]
+    },
+    options: { responsive: true }
+  });
+  const colors = ["#0ea5e9","#22c55e","#f59e0b","#ef4444"];
+  if (_cmpCharts.distA) _cmpCharts.distA.destroy();
+  if (_cmpCharts.distB) _cmpCharts.distB.destroy();
+  _cmpCharts.distA = new Chart(document.getElementById("cmp-chart-distA").getContext("2d"), distCfg(A.dist, colors));
+  _cmpCharts.distB = new Chart(document.getElementById("cmp-chart-distB").getContext("2d"), distCfg(B.dist, colors));
+
+  // 사원별 등급 변화 표
+  const keys = new Set([...Object.keys(A.empGrade), ...Object.keys(B.empGrade)]);
+  const rows = [];
+  keys.forEach(k => {
+    const [dept, name] = k.split("|");
+    const emp = EMPLOYEES.find(e => e.dept === dept && e.name === name);
+    if (!emp) return;
+    const gA = A.empGrade[k] || "-";
+    const gB = B.empGrade[k] || "-";
+    let arrow = "";
+    if (gA !== "-" && gB !== "-") {
+      const order = { S:4, A:3, B:2, C:1, "-":0 };
+      if (order[gB] > order[gA]) arrow = "↑ 상승";
+      else if (order[gB] < order[gA]) arrow = "↓ 하락";
+      else arrow = "= 유지";
+    } else if (gB !== "-") arrow = "🆕 신규";
+    else arrow = "○ 미제출";
+    rows.push({ dept, name, rank: emp.rank, gA, gB, arrow });
+  });
+  rows.sort((x,y) => x.dept.localeCompare(y.dept) || x.name.localeCompare(y.name));
+  const tbody = document.querySelector("#cmp-table tbody");
+  tbody.innerHTML = rows.map(r => `
+    <tr>
+      <td>${esc(r.dept)}</td>
+      <td>${esc(r.name)}</td>
+      <td>${esc(r.rank)}</td>
+      <td>${r.gA !== "-" ? `<span class="chip ${r.gA.toLowerCase()}">${r.gA}</span>` : `<span class="muted">-</span>`}</td>
+      <td>${r.gB !== "-" ? `<span class="chip ${r.gB.toLowerCase()}">${r.gB}</span>` : `<span class="muted">-</span>`}</td>
+      <td>${esc(r.arrow)}</td>
+    </tr>
+  `).join("") || `<tr><td colspan="6" style="text-align:center" class="muted">비교할 데이터가 없습니다.</td></tr>`;
 }
 
 /* --- 관리자 보안 (비밀번호 변경) --- */
@@ -1703,14 +2244,15 @@ function resetAdminPassword() {
 }
 
 function renderAdminResults(body) {
+  const period = resolveViewPeriod();
   const depts = [...new Set(EMPLOYEES.filter(e => !isExecEmp(e)).map(e => e.dept))];
   const all = [];
   depts.forEach(d => {
-    computeDeptResults(d).forEach(r => all.push({ ...r, dept: d }));
+    computeDeptResults(d, period).forEach(r => all.push({ ...r, dept: d }));
   });
   const byDept = {};
   depts.forEach(d => byDept[d] = all.filter(r => r.dept === d));
-  const execResults = computeExecResults();
+  const execResults = computeExecResults(period);
   const execAll = execResults.map(r => ({ ...r }));
 
   const regularCount = EMPLOYEES.filter(e => !isExecEmp(e)).length;
@@ -1724,11 +2266,12 @@ function renderAdminResults(body) {
   })();
 
   body.innerHTML = `
+    ${renderPeriodPickerBar(period)}
     <div class="stat-grid">
+      <div class="stat-box"><div class="label">조회 반기</div><div class="value" style="font-size:16px">${esc(periodLabel(period))}</div></div>
       <div class="stat-box"><div class="label">전체 대상자</div><div class="value">${totalCount}명 <span class="mini">(일반 ${regularCount} · 임원 ${execCount})</span></div></div>
       <div class="stat-box"><div class="label">제출 완료</div><div class="value">${submittedCount}</div></div>
       <div class="stat-box"><div class="label">전체 평균</div><div class="value">${overallAvg}</div></div>
-      <div class="stat-box"><div class="label">부서 수</div><div class="value">${depts.length}</div></div>
     </div>
     ${depts.map(d => renderDeptResultTable(d, byDept[d])).join("")}
     ${renderExecResultTable(execResults)}
@@ -1808,9 +2351,10 @@ function renderDeptResultTable(dept, results) {
 }
 
 function renderAdminDeptDist(body) {
+  const period = resolveViewPeriod();
   const depts = [...new Set(EMPLOYEES.filter(e => !isExecEmp(e)).map(e => e.dept))];
   const boxes = depts.map(d => {
-    const res = computeDeptResults(d);
+    const res = computeDeptResults(d, period);
     const dist = gradeDistribution(res);
     return `
       <div class="card" style="margin-bottom:12px">
@@ -1835,7 +2379,7 @@ function renderAdminDeptDist(body) {
   }).join("");
 
   // 임원 풀 분포
-  const execRes = computeExecResults();
+  const execRes = computeExecResults(period);
   const execDist = gradeDistribution(execRes);
   const execBox = `
     <div class="card" style="margin-bottom:12px;border-left:4px solid var(--primary)">
@@ -1859,10 +2403,10 @@ function renderAdminDeptDist(body) {
   `;
 
   body.innerHTML = `
+    ${renderPeriodPickerBar(period)}
     <div class="notice info">
-      부서원이 <b>3명 이상</b>인 부서는 총점 순위를 기준으로 <b>S 20%</b>, <b>A 30%</b>, <b>B 40%</b>, <b>C 10%</b> 비율 <b>상대평가</b>로 등급이 자동 산정됩니다.
-      부서원이 <b>2명 이하</b>인 소규모 부서(예: 자재관리부·신사업부)는 비율 분포가 의미가 없어
-      <b>점수 기준 절대평가</b>(S ≥ ${ABS_GRADE_THRESHOLDS.S} · A ${ABS_GRADE_THRESHOLDS.A}~${ABS_GRADE_THRESHOLDS.S-1} · B ${ABS_GRADE_THRESHOLDS.B}~${ABS_GRADE_THRESHOLDS.A-1} · C &lt; ${ABS_GRADE_THRESHOLDS.B})로 등급을 부여합니다.
+      <b>${esc(periodLabel(period))}</b> 부서별 분포입니다.
+      부서원이 <b>3명 이상</b>인 부서는 <b>S 20% / A 30% / B 40% / C 10%</b> 상대평가, 2명 이하는 절대평가로 산정됩니다.
       <br>임원(부장·이사)은 1차(조규오/임웅걸 부사장) + 2차(양정일 대표이사) 점수를 별도 풀로 묶어 동일한 상대평가 방식으로 산정합니다.
     </div>
     ${boxes}
@@ -2072,12 +2616,13 @@ function downloadUploadTemplate() {
 
 function exportEvaluationsXlsx() {
   if (!ensureSheetJS()) return;
+  const period = resolveViewPeriod();
   const depts = [...new Set(EMPLOYEES.filter(e => !isExecEmp(e)).map(e => e.dept))];
   const header = ["부서","이름","직급","평가표","1차점수","2차점수","1차평가자","2차평가자","1차코멘트","2차코멘트","평균","등급","부서내순위"];
   const rows = [header];
-  const all = getEvaluations();
+  const all = getEvaluationsByPeriod(period);
   depts.forEach(d => {
-    computeDeptResults(d).forEach(r => {
+    computeDeptResults(d, period).forEach(r => {
       const e1 = all.find(x => x.dept===d && x.empName===r.empName && x.round==="1차");
       const e2 = all.find(x => x.dept===d && x.empName===r.empName && x.round==="2차");
       rows.push([
@@ -2096,7 +2641,7 @@ function exportEvaluationsXlsx() {
   // 임원(부장·이사) 별도 시트
   const execHeader = ["부서","이름","직급","1차점수","1차평가자","1차코멘트","2차점수","2차평가자","2차코멘트","평균","등급","순위"];
   const execRows = [execHeader];
-  computeExecResults().forEach(r => {
+  computeExecResults(period).forEach(r => {
     const r3kq = all.find(x => x.dept===r.dept && x.empName===r.empName && x.round==="3차-조규오");
     const r3iw = all.find(x => x.dept===r.dept && x.empName===r.empName && x.round==="3차-임웅걸");
     const r4   = all.find(x => x.dept===r.dept && x.empName===r.empName && x.round==="4차");
@@ -2119,7 +2664,7 @@ function exportEvaluationsXlsx() {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "평가결과");
   XLSX.utils.book_append_sheet(wb, ws2, "임원평가결과");
-  XLSX.writeFile(wb, `인사평가결과_${new Date().toISOString().slice(0,10)}.xlsx`);
+  XLSX.writeFile(wb, `인사평가결과_${period}_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 
 // 전역 임시 저장: 업로드 미리보기 → 확정 반영
@@ -2274,17 +2819,23 @@ function processUploadRows(rows) {
 
 async function confirmUploadApply() {
   if (!_uploadPending || !_uploadPending.length) return;
-  if (!confirm(`${_uploadPending.length}건의 평가를 저장합니다. 동일 대상자의 기존 저장값은 업로드 값으로 덮어써집니다. 진행할까요?`)) return;
+  const activePeriod = getActivePeriod();
+  if (isPeriodClosed(activePeriod)) {
+    alert("현재 반기가 마감된 상태입니다. 반기 관리에서 활성 반기를 다시 지정한 뒤 업로드해 주세요.");
+    return;
+  }
+  if (!confirm(`${_uploadPending.length}건의 평가를 [${periodLabel(activePeriod)}] 에 저장합니다. 동일 대상자의 기존 저장값은 업로드 값으로 덮어써집니다. 진행할까요?`)) return;
   const list = [];
   _uploadPending.forEach(item => {
     if (item.s1 !== null) {
-      const existing = getEvaluation(item.dept, item.empName, "1차");
+      const existing = getEvaluation(item.dept, item.empName, "1차", activePeriod);
       list.push({
         dept: item.dept,
         empName: item.empName,
         empRank: item.empRank,
         rankCategory: item.rankCategory,
         round: "1차",
+        period: activePeriod,
         evaluatorName: item.eval1Name,
         scores: existing ? existing.scores : {},
         total: item.s1,
@@ -2294,13 +2845,14 @@ async function confirmUploadApply() {
       });
     }
     if (item.s2 !== null) {
-      const existing = getEvaluation(item.dept, item.empName, "2차");
+      const existing = getEvaluation(item.dept, item.empName, "2차", activePeriod);
       list.push({
         dept: item.dept,
         empName: item.empName,
         empRank: item.empRank,
         rankCategory: item.rankCategory,
         round: "2차",
+        period: activePeriod,
         evaluatorName: item.eval2Name,
         scores: existing ? existing.scores : {},
         total: item.s2,
@@ -2327,19 +2879,20 @@ function cancelUpload() {
 }
 
 function exportEvaluationsCsv() {
+  const period = resolveViewPeriod();
   const depts = [...new Set(EMPLOYEES.filter(e => !isExecEmp(e)).map(e => e.dept))];
-  const rows = [["부서","이름","직급","평가표","1차점수","2차점수","임원1차점수","임원2차점수","평균","등급","부서내순위"]];
+  const rows = [["반기","부서","이름","직급","평가표","1차점수","2차점수","임원1차점수","임원2차점수","평균","등급","부서내순위"]];
   depts.forEach(d => {
-    computeDeptResults(d).forEach(r => {
-      rows.push([d, r.empName, r.empRank, r.rankCategory,
+    computeDeptResults(d, period).forEach(r => {
+      rows.push([periodLabel(period), d, r.empName, r.empRank, r.rankCategory,
         r.score1 ?? "", r.score2 ?? "", "", "",
         r.avg !== null ? r.avg.toFixed(2) : "",
         r.grade ?? "", r.rankIndex]);
     });
   });
   // 임원(부장·이사)
-  computeExecResults().forEach(r => {
-    rows.push([r.dept, r.empName, r.empRank, r.rankCategory,
+  computeExecResults(period).forEach(r => {
+    rows.push([periodLabel(period), r.dept, r.empName, r.empRank, r.rankCategory,
       "", "",
       r.score3 !== null ? r.score3.toFixed(2) : "",
       r.score4 ?? "",
@@ -2351,17 +2904,18 @@ function exportEvaluationsCsv() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `인사평가결과_${new Date().toISOString().slice(0,10)}.csv`;
+  a.download = `인사평가결과_${period}_${new Date().toISOString().slice(0,10)}.csv`;
   a.click();
   URL.revokeObjectURL(url);
 }
 
 function exportEvaluationsDetailCsv() {
+  // 상세 CSV 는 반기 전체 데이터를 그대로 export (감사/백업 용도)
   const all = getEvaluations();
-  const rows = [["부서","이름","직급","평가표","차수","평가자","총점","제출시각","항목ID","항목점수"]];
+  const rows = [["반기","부서","이름","직급","평가표","차수","평가자","총점","제출시각","항목ID","항목점수"]];
   all.forEach(ev => {
     Object.entries(ev.scores).forEach(([k, v]) => {
-      rows.push([ev.dept, ev.empName, ev.empRank, ev.rankCategory, ev.round, ev.evaluatorName, ev.total, ev.submittedAt, k, v]);
+      rows.push([ev.period || "2026-H1", ev.dept, ev.empName, ev.empRank, ev.rankCategory, ev.round, ev.evaluatorName, ev.total, ev.submittedAt, k, v]);
     });
   });
   const csv = "\uFEFF" + rows.map(r => r.map(v => `"${String(v).replaceAll('"','""')}"`).join(",")).join("\n");
@@ -2369,7 +2923,7 @@ function exportEvaluationsDetailCsv() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `인사평가_상세_${new Date().toISOString().slice(0,10)}.csv`;
+  a.download = `인사평가_상세_전체반기_${new Date().toISOString().slice(0,10)}.csv`;
   a.click();
   URL.revokeObjectURL(url);
 }
@@ -2400,10 +2954,10 @@ function gradeByAbsoluteScore(score) {
 // 부서원이 3명 미만(1~2명)이면 절대평가, 3명 이상이면 상대평가(S20/A30/B40/C10)
 const SMALL_DEPT_THRESHOLD = 3;
 
-function computeDeptResults(dept) {
+function computeDeptResults(dept, period) {
   // 부장/이사(임원 평가 대상) 는 부서 등급 산정에서 제외 — 임원 풀에서 별도 산정
   const emps = EMPLOYEES.filter(e => e.dept === dept && !isExecEmp(e));
-  const evals = getEvaluations();
+  const evals = getEvaluationsByPeriod(period);
   const rows = emps.map(e => {
     const e1 = evals.find(x => x.dept===dept && x.empName===e.name && x.round==="1차");
     const e2 = evals.find(x => x.dept===dept && x.empName===e.name && x.round==="2차");
@@ -2475,9 +3029,9 @@ function computeDeptResults(dept) {
  * 3차(조규오 OR 임웅걸), 4차(양정일) 점수를 평균해서 avg 산출.
  * 11명 전체를 하나의 풀로 S20/A30/B40/C10 상대평가.
  */
-function computeExecResults() {
+function computeExecResults(period) {
   const emps = EMPLOYEES.filter(isExecEmp);
-  const evals = getEvaluations();
+  const evals = getEvaluationsByPeriod(period);
   const rows = emps.map(e => {
     const r3kq = evals.find(x => x.dept===e.dept && x.empName===e.name && x.round==="3차-조규오");
     const r3iw = evals.find(x => x.dept===e.dept && x.empName===e.name && x.round==="3차-임웅걸");
@@ -2592,6 +3146,11 @@ window.manualRefresh = manualRefresh;
 window.retryConnect = retryConnect;
 window.changeAdminPassword = changeAdminPassword;
 window.resetAdminPassword = resetAdminPassword;
+window.setViewPeriod = setViewPeriod;
+window.adminSetActivePeriod = adminSetActivePeriod;
+window.adminClosePeriod = adminClosePeriod;
+window.adminCreatePeriod = adminCreatePeriod;
+window.cmpChangePeriod = cmpChangePeriod;
 
 async function bootstrap() {
   // 초기 로딩 스피너
