@@ -1689,6 +1689,34 @@ function resolveViewPeriod() {
   return session.viewPeriod || getActivePeriod();
 }
 
+/* ==========================================================
+ *  결과 조회 권한 (계정 유형별 컬럼 노출 제어)
+ *  ----------------------------------------------------------
+ *  role 종류:
+ *    - "admin"      : 관리자 (전체)
+ *    - "exec-2nd"   : 임원 2차 평가자 (양정일 대표이사)
+ *    - "exec-1st"   : 임원 1차 평가자 (조규오·임웅걸 부사장)
+ *    - "dept-2nd"   : 일반 부서 2차 평가자
+ *    - "dept-1st"   : 일반 부서 1차 평가자
+ *    - "guest"      : 그 외 (원칙적으로 결과 화면 접근 X)
+ * ========================================================== */
+function getViewerRole() {
+  if (session.isAdmin) return "admin";
+  if (session.evaluatorDept === "임원") {
+    if (session.evaluatorRound === "4차") return "exec-2nd";
+    if (session.evaluatorRound === "3차-조규오" || session.evaluatorRound === "3차-임웅걸") return "exec-1st";
+  }
+  if (session.evaluatorDept && session.evaluatorRound === "1차") return "dept-1st";
+  if (session.evaluatorDept && session.evaluatorRound === "2차") return "dept-2nd";
+  return "guest";
+}
+// 컬럼/영역 표시 여부 헬퍼
+function canSeeSecondScore(role) { return role !== "dept-1st"; }              // dept-1st 만 2차 숨김
+function canSeeAverage(role)     { return role !== "dept-1st"; }              // dept-1st 는 평균도 무의미
+function canSeeGrade(role)       { return role === "admin" || role === "exec-1st" || role === "exec-2nd"; }
+function canSeeRank(role)        { return canSeeGrade(role); }                // 등급 볼 수 있어야 순위도 의미
+function canSeeDistBar(role)     { return canSeeGrade(role); }                // S/A/B/C 분포 바 = 등급 정보
+
 // 반기 드롭다운 UI 렌더링 (결과 조회 화면 공용)
 function renderPeriodPickerBar(currentId) {
   const s = getSettings();
@@ -1712,41 +1740,75 @@ function renderDeptResultsInline(dept, container) {
     return renderExecResultsInline(container);
   }
   const period = resolveViewPeriod();
+  const role = getViewerRole();
   const emps = EMPLOYEES.filter(e => e.dept === dept && !isExecEmp(e));
   const results = computeDeptResults(dept, period);
-  const rows = results.map(r => `
-    <tr>
-      <td>${r.rankIndex}</td>
-      <td><b>${esc(r.empName)}</b></td>
-      <td>${esc(r.empRank)}</td>
-      <td style="text-align:center">${r.score1 ?? "-"}</td>
-      <td style="text-align:center">${r.score2 ?? "-"}</td>
-      <td style="text-align:center"><b>${r.avg !== null ? r.avg.toFixed(1) : "-"}</b></td>
-      <td style="text-align:center">${r.grade ? `<span class="chip ${r.grade.toLowerCase()}">${r.grade}</span>` : "-"}</td>
-    </tr>
-  `).join("");
+  // 컬럼 노출 판정
+  const showRank  = canSeeRank(role);
+  const showSec   = canSeeSecondScore(role);
+  const showAvg   = canSeeAverage(role);
+  const showGrade = canSeeGrade(role);
+  const showDist  = canSeeDistBar(role);
+
+  const headCells = [];
+  if (showRank) headCells.push(`<th style="width:50px">순위</th>`);
+  headCells.push(`<th>이름</th>`);
+  headCells.push(`<th style="width:80px">직급</th>`);
+  headCells.push(`<th style="width:80px">1차</th>`);
+  if (showSec)   headCells.push(`<th style="width:80px">2차</th>`);
+  if (showAvg)   headCells.push(`<th style="width:80px">평균</th>`);
+  if (showGrade) headCells.push(`<th style="width:80px">등급</th>`);
+  const colSpan = headCells.length;
+
+  const rows = results.map(r => {
+    const tds = [];
+    if (showRank) tds.push(`<td>${r.rankIndex}</td>`);
+    tds.push(`<td><b>${esc(r.empName)}</b></td>`);
+    tds.push(`<td>${esc(r.empRank)}</td>`);
+    tds.push(`<td style="text-align:center">${r.score1 ?? "-"}</td>`);
+    if (showSec)   tds.push(`<td style="text-align:center">${r.score2 ?? "-"}</td>`);
+    if (showAvg)   tds.push(`<td style="text-align:center"><b>${r.avg !== null ? r.avg.toFixed(1) : "-"}</b></td>`);
+    if (showGrade) tds.push(`<td style="text-align:center">${r.grade ? `<span class="chip ${r.grade.toLowerCase()}">${r.grade}</span>` : "-"}</td>`);
+    return `<tr>${tds.join("")}</tr>`;
+  }).join("");
+
   const dist = gradeDistribution(results);
+  const submittedCount = results.filter(r => r.avg !== null).length;
+
+  // stat 박스: 대상/제출은 항상, 평균은 dept-1st 만 숨김
+  const statBoxes = [
+    `<div class="stat-box"><div class="label">평가 대상</div><div class="value">${emps.length}명</div></div>`,
+    `<div class="stat-box"><div class="label">제출 완료</div><div class="value">${submittedCount}</div></div>`
+  ];
+  if (showAvg) {
+    statBoxes.push(`<div class="stat-box"><div class="label">부서 평균</div><div class="value">${deptAverage(results)}</div></div>`);
+  }
+
+  // 안내 문구는 계정별로 살짝 다르게
+  let noticeText;
+  if (role === "dept-1st") {
+    noticeText = `우리 부서 (<b>${esc(dept)}</b>) 의 <b>${esc(periodLabel(period))}</b> · <b>1차 평가자 열람 화면</b>입니다. 본인이 매긴 <b>1차 점수만</b> 확인 가능하며, 2차/평균/등급은 표시되지 않습니다.`;
+  } else if (role === "dept-2nd") {
+    noticeText = `우리 부서 (<b>${esc(dept)}</b>) 의 <b>${esc(periodLabel(period))}</b> · <b>2차 평가자 열람 화면</b>입니다. 1차/2차 점수와 부서 평균까지 확인할 수 있습니다. 최종 등급은 관리자만 열람합니다.`;
+  } else {
+    noticeText = `우리 부서 (<b>${esc(dept)}</b>) 의 <b>${esc(periodLabel(period))}</b> 평가 결과입니다.`;
+  }
+
   container.innerHTML = `
     ${renderPeriodPickerBar(period)}
-    <div class="notice info">우리 부서 (<b>${esc(dept)}</b>) 의 <b>${esc(periodLabel(period))}</b> 평가 결과만 열람할 수 있습니다. 전사 결과는 관리자만 조회 가능합니다.</div>
-    <div class="stat-grid">
-      <div class="stat-box"><div class="label">평가 대상</div><div class="value">${emps.length}명</div></div>
-      <div class="stat-box"><div class="label">제출 완료</div><div class="value">${results.filter(r => r.avg !== null).length}</div></div>
-      <div class="stat-box"><div class="label">부서 평균</div><div class="value">${deptAverage(results)}</div></div>
-    </div>
-    <div>
-      <h3>부서 내 S/A/B/C 분포</h3>
-      <div class="mini" style="margin-bottom:6px">등급 산정: ${esc(gradingModeLabel(results))}</div>
-      ${renderDistBar(dist)}
-    </div>
+    <div class="notice info">${noticeText}</div>
+    <div class="stat-grid">${statBoxes.join("")}</div>
+    ${showDist ? `
+      <div>
+        <h3>부서 내 S/A/B/C 분포</h3>
+        <div class="mini" style="margin-bottom:6px">등급 산정: ${esc(gradingModeLabel(results))}</div>
+        ${renderDistBar(dist)}
+      </div>
+    ` : ``}
     <div style="margin-top:20px">
       <table>
-        <thead><tr>
-          <th style="width:50px">순위</th><th>이름</th><th>직급</th>
-          <th style="width:80px">1차</th><th style="width:80px">2차</th>
-          <th style="width:80px">평균</th><th style="width:80px">등급</th>
-        </tr></thead>
-        <tbody>${rows || `<tr><td colspan="7" style="text-align:center" class="muted">아직 결과가 없습니다.</td></tr>`}</tbody>
+        <thead><tr>${headCells.join("")}</tr></thead>
+        <tbody>${rows || `<tr><td colspan="${colSpan}" style="text-align:center" class="muted">아직 결과가 없습니다.</td></tr>`}</tbody>
       </table>
     </div>
   `;
@@ -1757,40 +1819,53 @@ function renderExecResultsInline(container) {
   const period = resolveViewPeriod();
   const results = computeExecResults(period);
   const totalTargets = EMPLOYEES.filter(isExecEmp).length;
-  const rows = results.map(r => `
-    <tr>
-      <td>${r.rankIndex}</td>
-      <td><b>${esc(r.empName)}</b></td>
-      <td>${esc(r.empRank)}</td>
-      <td>${esc(r.dept)}</td>
-      <td style="text-align:center">${r.score3 !== null ? r.score3.toFixed(1) : "-"}</td>
-      <td style="text-align:center">${r.score4 ?? "-"}</td>
-      <td style="text-align:center"><b>${r.avg !== null ? r.avg.toFixed(1) : "-"}</b></td>
-      <td style="text-align:center">${r.grade ? `<span class="chip ${r.grade.toLowerCase()}">${r.grade}</span>` : "-"}</td>
-    </tr>
-  `).join("");
+  const role = getViewerRole();
+  const showGrade = canSeeGrade(role);
+  const showDist  = canSeeDistBar(role);
+
+  const headCells = [];
+  if (showGrade) headCells.push(`<th style="width:50px">순위</th>`);
+  headCells.push(`<th>이름</th>`);
+  headCells.push(`<th style="width:80px">직급</th>`);
+  headCells.push(`<th>부서</th>`);
+  headCells.push(`<th style="width:70px">1차</th>`);
+  headCells.push(`<th style="width:70px">2차</th>`);
+  headCells.push(`<th style="width:70px">평균</th>`);
+  if (showGrade) headCells.push(`<th style="width:70px">등급</th>`);
+  const colSpan = headCells.length;
+
+  const rows = results.map(r => {
+    const tds = [];
+    if (showGrade) tds.push(`<td>${r.rankIndex}</td>`);
+    tds.push(`<td><b>${esc(r.empName)}</b></td>`);
+    tds.push(`<td>${esc(r.empRank)}</td>`);
+    tds.push(`<td>${esc(r.dept)}</td>`);
+    tds.push(`<td style="text-align:center">${r.score3 !== null ? r.score3.toFixed(1) : "-"}</td>`);
+    tds.push(`<td style="text-align:center">${r.score4 ?? "-"}</td>`);
+    tds.push(`<td style="text-align:center"><b>${r.avg !== null ? r.avg.toFixed(1) : "-"}</b></td>`);
+    if (showGrade) tds.push(`<td style="text-align:center">${r.grade ? `<span class="chip ${r.grade.toLowerCase()}">${r.grade}</span>` : "-"}</td>`);
+    return `<tr>${tds.join("")}</tr>`;
+  }).join("");
   const dist = gradeDistribution(results);
   container.innerHTML = `
     ${renderPeriodPickerBar(period)}
-    <div class="notice info">임원(부장·이사) <b>${esc(periodLabel(period))}</b> 평가 결과는 1차(부사장)/2차(대표이사) 평가자 본인만 열람할 수 있습니다. 전사 결과는 관리자만 조회 가능합니다.</div>
+    <div class="notice info">임원(부장·이사) <b>${esc(periodLabel(period))}</b> 평가 결과입니다. 부사장·대표이사·관리자만 최종 등급을 열람할 수 있습니다.</div>
     <div class="stat-grid">
       <div class="stat-box"><div class="label">평가 대상</div><div class="value">${totalTargets}명</div></div>
       <div class="stat-box"><div class="label">제출 완료</div><div class="value">${results.filter(r => r.avg !== null).length}</div></div>
       <div class="stat-box"><div class="label">전체 평균</div><div class="value">${deptAverage(results)}</div></div>
     </div>
-    <div>
-      <h3>임원 S/A/B/C 분포</h3>
-      <div class="mini" style="margin-bottom:6px">등급 산정: ${esc(gradingModeLabel(results))}</div>
-      ${renderDistBar(dist)}
-    </div>
+    ${showDist ? `
+      <div>
+        <h3>임원 S/A/B/C 분포</h3>
+        <div class="mini" style="margin-bottom:6px">등급 산정: ${esc(gradingModeLabel(results))}</div>
+        ${renderDistBar(dist)}
+      </div>
+    ` : ``}
     <div style="margin-top:20px;overflow-x:auto">
       <table>
-        <thead><tr>
-          <th style="width:50px">순위</th><th>이름</th><th>직급</th><th>부서</th>
-          <th style="width:80px">1차</th><th style="width:80px">2차</th>
-          <th style="width:80px">평균</th><th style="width:80px">등급</th>
-        </tr></thead>
-        <tbody>${rows || `<tr><td colspan="8" style="text-align:center" class="muted">아직 결과가 없습니다.</td></tr>`}</tbody>
+        <thead><tr>${headCells.join("")}</tr></thead>
+        <tbody>${rows || `<tr><td colspan="${colSpan}" style="text-align:center" class="muted">아직 결과가 없습니다.</td></tr>`}</tbody>
       </table>
     </div>
   `;
