@@ -620,18 +620,40 @@ const EXEC_TARGETS = {
 
 // 3차/4차 평가 대상 집합 (부서|이름 키)
 const EXEC_KEY = e => `${e.dept}|${e.name}`;
-const EXEC_SET = (() => {
-  const s = new Set();
-  Object.values(EXEC_TARGETS).forEach(arr => arr.forEach(t => s.add(`${t.dept}|${t.name}`)));
-  return s;
-})();
+const EXEC_SET = new Set();
 function isExecEmp(emp) { return EXEC_SET.has(EXEC_KEY(emp)); }
 function isExecRound(round) {
   return round === "4차" || (typeof round === "string" && round.startsWith("3차"));
 }
 
+// 서버 employees 명단으로 EMPLOYEES / EXEC_TARGETS / EXEC_SET 재구성
+// (조규오 담당은 강유석·송지훈, 임웅걸 담당은 그 외 부장·이사)
+function rebuildFromEmployees(serverEmps) {
+  const list = (serverEmps || []).filter(e => e && e.active !== false && e.dept && e.name);
+  if (!list.length) return; // 서버 데이터 없으면 하드코딩 fallback 유지
+  // EMPLOYEES 배열 교체 (in-place)
+  EMPLOYEES.length = 0;
+  list.forEach(e => EMPLOYEES.push({
+    dept: e.dept, name: e.name, rank: e.rank || "", rankCategory: e.rankCategory || "대리이하"
+  }));
+  // 임원(부장·이사) 자동 분배
+  const execEmps = EMPLOYEES.filter(e => e.rank === "부장" || e.rank === "이사");
+  const kqNames = new Set(["강유석", "송지훈"]); // 조규오 담당 (사용자 지정)
+  EXEC_TARGETS["3차-조규오"] = execEmps.filter(e => kqNames.has(e.name)).map(e => ({dept: e.dept, name: e.name}));
+  EXEC_TARGETS["3차-임웅걸"] = execEmps.filter(e => !kqNames.has(e.name)).map(e => ({dept: e.dept, name: e.name}));
+  EXEC_TARGETS["4차"] = execEmps.map(e => ({dept: e.dept, name: e.name}));
+  // EXEC_SET 재계산
+  EXEC_SET.clear();
+  Object.values(EXEC_TARGETS).forEach(arr => arr.forEach(t => EXEC_SET.add(t.dept + "|" + t.name)));
+}
+// 초기: 하드코딩 EXEC_TARGETS 로 EXEC_SET 세팅 (서버 로드 실패 대비)
+(function() {
+  Object.values(EXEC_TARGETS).forEach(arr => arr.forEach(t => EXEC_SET.add(t.dept + "|" + t.name)));
+})();
+
 // 직원 명단 (rankCategory: '과장이상' | '대리이하')
 // 부장·이사는 3차/4차 임원 평가 대상 (1차/2차 에서는 평가 대상 아님)
+// initData 후 서버 employees 로 in-place 교체됨
 const EMPLOYEES = [
   // --- 임원 평가 대상 (부장·이사) ---
   { dept: "경영지원부", name: "강유석", rank: "부장", rankCategory: "과장이상" },
@@ -912,6 +934,9 @@ async function initData() {
       // 서버 settings 우선, 없으면 기존 데이터로부터 자동 유추
       _cache.settings    = normalizeSettings(data.settings || deriveSettingsFromEvaluations(_cache.evaluations));
       _cache.adjustments = (data.adjustments || []);
+      _cache.employees   = (data.employees || []);
+      // 서버 직원 명단이 있으면 하드코딩 EMPLOYEES 를 override 하고 EXEC_TARGETS 자동 재구성
+      rebuildFromEmployees(_cache.employees);
       _cache.remoteStatus = "ok";
       return;
     } catch (e) {
@@ -1132,6 +1157,35 @@ function getAdjustmentDetail(period, dept, empName) {
     .forEach(a => { out[a.category] = { points: Number(a.points)||0, reason: a.reason||"", updatedBy: a.updatedBy||"", updatedAt: a.updatedAt||"" }; });
   return out;
 }
+/* ---- 직원 명단 (employees) ---- */
+function getServerEmployees() { return _cache.employees || []; }
+async function upsertEmployeeRemote(emp) {
+  // 로컬 캐시 갱신
+  const all = _cache.employees || [];
+  const idx = all.findIndex(x => x.dept === emp.dept && x.name === emp.name);
+  if (idx >= 0) all[idx] = Object.assign({}, all[idx], emp);
+  else all.push(Object.assign({ active: true }, emp));
+  _cache.employees = all;
+  rebuildFromEmployees(all);
+  if (IS_REMOTE()) {
+    await remotePost("upsertEmployee", emp);
+  } else {
+    saveStore("hy_employees_v1", all);
+  }
+}
+async function softDeleteEmployeeRemote(dept, name) {
+  const all = _cache.employees || [];
+  const target = all.find(x => x.dept === dept && x.name === name);
+  if (target) { target.active = false; target.leftAt = new Date().toISOString(); }
+  _cache.employees = all;
+  rebuildFromEmployees(all);
+  if (IS_REMOTE()) {
+    await remotePost("softDeleteEmployee", { dept, name });
+  } else {
+    saveStore("hy_employees_v1", all);
+  }
+}
+
 async function bulkUpsertAdjustmentsRemote(list) {
   // 로컬 캐시 갱신
   const all = _cache.adjustments || [];
@@ -2226,6 +2280,7 @@ function renderAdminHome() {
         <div class="tab ${tab==='data'?'active':''}"     onclick="setAdminTab('data')">데이터 / 내보내기</div>
         <div class="tab ${tab==='periods'?'active':''}"  onclick="setAdminTab('periods')">반기 관리</div>
         <div class="tab ${tab==='compare'?'active':''}"  onclick="setAdminTab('compare')">반기 비교</div>
+        <div class="tab ${tab==='employees'?'active':''}" onclick="setAdminTab('employees')">직원 관리</div>
         <div class="tab ${tab==='security'?'active':''}" onclick="setAdminTab('security')">보안</div>
       </div>
       <div id="admin-body"></div>
@@ -2237,7 +2292,7 @@ function renderAdminHome() {
 function setAdminTab(tab) {
   session.adminTab = tab;
   document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
-  const map = { results:0, dept:1, accounts:2, data:3, periods:4, compare:5, security:6 };
+  const map = { results:0, dept:1, accounts:2, data:3, periods:4, compare:5, employees:6, security:7 };
   const tabs = document.querySelectorAll(".tab");
   if (tabs[map[tab]]) tabs[map[tab]].classList.add("active");
   const body = document.getElementById("admin-body");
@@ -2247,6 +2302,7 @@ function setAdminTab(tab) {
   else if (tab === "data") renderAdminData(body);
   else if (tab === "periods") renderAdminPeriods(body);
   else if (tab === "compare") renderAdminCompare(body);
+  else if (tab === "employees") renderAdminEmployees(body);
   else if (tab === "security") renderAdminSecurity(body);
 }
 
@@ -2532,6 +2588,183 @@ function renderCompareCharts() {
       <td>${esc(r.arrow)}</td>
     </tr>
   `).join("") || `<tr><td colspan="6" style="text-align:center" class="muted">비교할 데이터가 없습니다.</td></tr>`;
+}
+
+/* --- 관리자: 직원 관리 (CRUD) --- */
+function renderAdminEmployees(body) {
+  // 편집/추가 상태 초기화
+  if (!session.__empEditing) session.__empEditing = null; // {mode:'add'|'edit', origDept, origName, dept, name, rank, rankCategory}
+  if (!session.__empFilterDept) session.__empFilterDept = "";
+  if (!session.__empFilterSearch) session.__empFilterSearch = "";
+  const hideInactive = session.__empHideInactive !== false; // 기본 활성만 표시
+
+  const all = getServerEmployees();
+  const departments = [...new Set(all.map(e => e.dept))].sort();
+  const filterDept = session.__empFilterDept;
+  const searchText = (session.__empFilterSearch || "").trim();
+
+  const filtered = all.filter(e => {
+    if (hideInactive && e.active === false) return false;
+    if (filterDept && e.dept !== filterDept) return false;
+    if (searchText && !e.name.includes(searchText)) return false;
+    return true;
+  });
+
+  const editing = session.__empEditing;
+  const RANKS = ["회장","대표이사","부사장","전무","상무","이사","부장","팀장","차장","과장","대리","반장","주임","연구원","사원"];
+  const MGR_SET = new Set(["회장","대표이사","부사장","전무","상무","이사","부장","팀장","차장","과장"]);
+
+  const editForm = editing ? `
+    <div class="card" style="background:#eff6ff;border:2px solid #3b82f6;margin-bottom:14px">
+      <h3 style="margin:0 0 10px">${editing.mode === 'add' ? '➕ 직원 추가' : '✏️ 직원 수정: ' + esc(editing.origName)}</h3>
+      <div class="row" style="gap:8px;align-items:flex-end;flex-wrap:wrap">
+        <div style="flex:1;min-width:130px">
+          <label>부서</label>
+          <select id="emp-form-dept">
+            ${departments.map(d => `<option value="${esc(d)}"${editing.dept === d ? ' selected' : ''}>${esc(d)}</option>`).join("")}
+            ${editing.dept && !departments.includes(editing.dept) ? `<option value="${esc(editing.dept)}" selected>${esc(editing.dept)}</option>` : ''}
+          </select>
+          <div class="mini" style="margin-top:2px">
+            <input type="text" placeholder="새 부서명 입력" id="emp-form-newdept" style="padding:4px 6px;font-size:12px" value=""/>
+          </div>
+        </div>
+        <div style="flex:1;min-width:100px">
+          <label>이름</label>
+          <input type="text" id="emp-form-name" value="${esc(editing.name || '')}" ${editing.mode === 'edit' ? 'readonly title="이름 변경은 삭제 후 추가로 처리하세요"' : ''}/>
+        </div>
+        <div style="width:120px">
+          <label>직급</label>
+          <select id="emp-form-rank">
+            ${RANKS.map(r => `<option value="${esc(r)}"${editing.rank === r ? ' selected' : ''}>${esc(r)}</option>`).join("")}
+          </select>
+        </div>
+        <div>
+          <button onclick="empFormSave()">${editing.mode === 'add' ? '➕ 추가' : '💾 저장'}</button>
+          <button class="secondary" onclick="empFormCancel()">취소</button>
+        </div>
+      </div>
+      <div id="emp-form-msg" class="mini" style="margin-top:8px"></div>
+    </div>
+  ` : '';
+
+  const rows = filtered.map(e => {
+    const isExec = e.rank === "부장" || e.rank === "이사";
+    const inactive = e.active === false;
+    return `
+      <tr${inactive ? ' style="opacity:0.5;text-decoration:line-through"' : ''}>
+        <td>${esc(e.dept)}</td>
+        <td><b>${esc(e.name)}</b>${isExec ? ' <span class="chip" style="background:#fef3c7;color:#92400e;padding:1px 6px;font-size:10px">임원평가</span>' : ''}</td>
+        <td>${esc(e.rank)}</td>
+        <td>${esc(e.rankCategory)}</td>
+        <td>${inactive ? '<span class="chip" style="background:#fee2e2;color:#991b1b">퇴사</span>' : '<span class="chip done">재직</span>'}</td>
+        <td style="white-space:nowrap">
+          ${inactive ?
+            `<button class="small secondary" onclick="empReinstate('${esc(e.dept)}','${esc(e.name)}')">재입사</button>` :
+            `<button class="small ghost" onclick="empEdit('${esc(e.dept)}','${esc(e.name)}')">수정</button>
+             <button class="small danger" onclick="empSoftDelete('${esc(e.dept)}','${esc(e.name)}')">퇴사</button>`
+          }
+        </td>
+      </tr>`;
+  }).join("");
+
+  const activeCount = all.filter(e => e.active !== false).length;
+  const inactiveCount = all.filter(e => e.active === false).length;
+
+  body.innerHTML = `
+    <div class="notice info" style="margin-bottom:14px">
+      직원 명단은 서버 <b>employees</b> 시트에 저장되며, 평가 대상·평가자 계정·임원(부장·이사) 목록이 이 명단에 연동됩니다.
+      퇴사 처리는 soft delete로 처리되어 과거 반기 평가 결과는 그대로 보존됩니다.
+    </div>
+    <div class="flex" style="gap:10px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
+      <button onclick="empAdd()">➕ 신규 직원 추가</button>
+      <input id="emp-search" type="text" placeholder="🔍 이름 검색" value="${esc(session.__empFilterSearch)}" oninput="onEmpSearchChange(this.value)" style="width:150px"/>
+      <select id="emp-dept-filter" onchange="onEmpDeptChange(this.value)">
+        <option value="">전체 부서</option>
+        ${departments.map(d => `<option value="${esc(d)}"${filterDept === d ? ' selected' : ''}>${esc(d)}</option>`).join("")}
+      </select>
+      <label style="display:inline-flex;gap:6px;align-items:center;font-size:13px">
+        <input type="checkbox" ${hideInactive ? 'checked' : ''} onchange="onEmpHideInactive(this.checked)" style="width:auto"/>
+        퇴사자 숨김
+      </label>
+      <span class="mini" style="margin-left:auto">재직 ${activeCount}명 · 퇴사 ${inactiveCount}명 · 표시 ${filtered.length}명</span>
+    </div>
+    ${editForm}
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th style="width:130px">부서</th>
+          <th>이름</th>
+          <th style="width:70px">직급</th>
+          <th style="width:80px">평가표</th>
+          <th style="width:70px">상태</th>
+          <th style="width:150px">관리</th>
+        </tr></thead>
+        <tbody>${rows || `<tr><td colspan="6" style="text-align:center" class="muted">해당 직원이 없습니다.</td></tr>`}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function onEmpSearchChange(v)    { session.__empFilterSearch = v; renderAdminEmployees(document.getElementById("admin-body")); }
+function onEmpDeptChange(v)      { session.__empFilterDept = v;   renderAdminEmployees(document.getElementById("admin-body")); }
+function onEmpHideInactive(v)    { session.__empHideInactive = v; renderAdminEmployees(document.getElementById("admin-body")); }
+
+function empAdd() {
+  session.__empEditing = { mode: 'add', dept: '', name: '', rank: '사원' };
+  renderAdminEmployees(document.getElementById("admin-body"));
+}
+function empEdit(dept, name) {
+  const emp = (getServerEmployees()).find(e => e.dept === dept && e.name === name);
+  if (!emp) return alert("직원을 찾을 수 없습니다.");
+  session.__empEditing = { mode: 'edit', origDept: dept, origName: name, dept: emp.dept, name: emp.name, rank: emp.rank };
+  renderAdminEmployees(document.getElementById("admin-body"));
+}
+function empFormCancel() {
+  session.__empEditing = null;
+  renderAdminEmployees(document.getElementById("admin-body"));
+}
+async function empFormSave() {
+  const editing = session.__empEditing;
+  if (!editing) return;
+  const newDeptInput = document.getElementById("emp-form-newdept").value.trim();
+  const dept = newDeptInput || document.getElementById("emp-form-dept").value;
+  const name = document.getElementById("emp-form-name").value.trim();
+  const rank = document.getElementById("emp-form-rank").value;
+  const msg = document.getElementById("emp-form-msg");
+  if (!dept || !name || !rank) {
+    msg.innerHTML = `<span style="color:var(--danger)">부서·이름·직급 모두 입력해 주세요</span>`;
+    return;
+  }
+  const MGR_SET = new Set(["회장","대표이사","부사장","전무","상무","이사","부장","팀장","차장","과장"]);
+  const rankCategory = MGR_SET.has(rank) ? "과장이상" : "대리이하";
+  try {
+    if (editing.mode === 'edit' && (editing.origDept !== dept || editing.origName !== name)) {
+      // 부서 이동인 경우 → 원본 soft delete + 새 dept에 upsert
+      if (editing.origDept !== dept && editing.origName === name) {
+        // 이름 유지, 부서만 변경
+        await softDeleteEmployeeRemote(editing.origDept, editing.origName);
+      }
+    }
+    await upsertEmployeeRemote({ dept, name, rank, rankCategory, active: true });
+    session.__empEditing = null;
+    renderAdminEmployees(document.getElementById("admin-body"));
+  } catch(e) {
+    msg.innerHTML = `<span style="color:var(--danger)">저장 실패: ${esc(e.message)}</span>`;
+  }
+}
+async function empSoftDelete(dept, name) {
+  if (!confirm(`${dept} ${name} 님을 퇴사 처리하시겠습니까?\n(과거 평가 결과는 그대로 유지되며, 앞으로 평가 대상에서 제외됩니다.)`)) return;
+  try {
+    await softDeleteEmployeeRemote(dept, name);
+    renderAdminEmployees(document.getElementById("admin-body"));
+  } catch(e) { alert("실패: " + e.message); }
+}
+async function empReinstate(dept, name) {
+  if (!confirm(`${dept} ${name} 님을 재입사(활성화) 처리하시겠습니까?`)) return;
+  try {
+    await upsertEmployeeRemote({ dept, name, rank: (getServerEmployees().find(e=>e.dept===dept&&e.name===name)||{}).rank || "사원", active: true, leftAt: "" });
+    renderAdminEmployees(document.getElementById("admin-body"));
+  } catch(e) { alert("실패: " + e.message); }
 }
 
 /* --- 관리자 보안 (비밀번호 변경) --- */
@@ -3528,6 +3761,15 @@ window.onAdjFilterChange = onAdjFilterChange;
 window.onAdjPointsChange = onAdjPointsChange;
 window.onAdjReasonChange = onAdjReasonChange;
 window.saveAdjustmentEdits = saveAdjustmentEdits;
+window.onEmpSearchChange = onEmpSearchChange;
+window.onEmpDeptChange = onEmpDeptChange;
+window.onEmpHideInactive = onEmpHideInactive;
+window.empAdd = empAdd;
+window.empEdit = empEdit;
+window.empFormCancel = empFormCancel;
+window.empFormSave = empFormSave;
+window.empSoftDelete = empSoftDelete;
+window.empReinstate = empReinstate;
 
 async function bootstrap() {
   // 초기 로딩 스피너
