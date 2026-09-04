@@ -873,27 +873,31 @@ function normalizeSettings(s) {
   periods.forEach(p => {
     if (!p || !p.id || seen[p.id]) return;
     seen[p.id] = true;
+    const allowed = ["closed", "upcoming", "active", "aborted"];
     cleaned.push({
       id: String(p.id),
-      status: (p.status === "closed" || p.status === "upcoming" || p.status === "active") ? p.status : "active",
+      status: allowed.indexOf(p.status) >= 0 ? p.status : "active",
       createdAt: p.createdAt || null,
       closedAt: p.closedAt || null
     });
   });
   let active = src.activePeriod || null;
-  if (active && !seen[active]) {
+  if (active === null || active === undefined || active === "") {
+    // 활성 반기가 명시적으로 null 이면 그대로 두기 (완료/중단 후 상태)
+  } else if (!seen[active]) {
     cleaned.push({ id: active, status: "active", createdAt: new Date().toISOString(), closedAt: null });
     seen[active] = true;
   }
-  if (!active) {
-    const openOne = cleaned.find(p => p.status === "active");
-    active = openOne ? openOne.id : (cleaned[0] ? cleaned[0].id : computeDefaultPeriodId());
-    if (!seen[active]) cleaned.push({ id: active, status: "active", createdAt: new Date().toISOString(), closedAt: null });
+  // 반기가 하나도 없으면 (완전 초기) 기본 반기 하나 생성
+  if (!cleaned.length) {
+    const def = computeDefaultPeriodId();
+    cleaned.push({ id: def, status: "active", createdAt: new Date().toISOString(), closedAt: null });
+    active = def;
   }
-  // active 반기는 status=active 로 강제 정합 (다른 것은 그대로 유지 하되 active 표시 유일화)
+  // active 반기 정합: null 이면 active 표시된 것 자동 승격 안 함 (사용자가 명시적으로 활성화해야 함)
   cleaned.forEach(p => {
-    if (p.id === active) p.status = "active";
-    else if (p.status === "active") p.status = "closed";
+    if (active && p.id === active) p.status = "active";
+    else if (p.status === "active") p.status = "closed"; // 활성 반기가 없으면 그동안 active 표시된 건 closed 로 정정
   });
   cleaned.sort((a,b) => periodSortKey(b.id) - periodSortKey(a.id)); // 최신이 위로
   return { activePeriod: active, periods: cleaned };
@@ -1159,6 +1163,34 @@ async function closePeriodRemote(periodId) {
 async function reopenPeriodRemote(periodId) {
   // 마감된 반기를 다시 활성으로 (관리자만 수정 가능하게 하려면 setActivePeriod 로 대체 가능)
   return setActivePeriodRemote(periodId);
+}
+
+// 반기 완료 처리: 상태를 "closed"(=완료) 로, 활성 반기였다면 활성 해제 (다음 반기 자동 활성화 X)
+async function completePeriodRemote(periodId) {
+  const s = getSettings();
+  const p = s.periods.find(x => x.id === periodId);
+  if (p) { p.status = "closed"; p.closedAt = new Date().toISOString(); }
+  if (s.activePeriod === periodId) s.activePeriod = null;
+  _cache.settings = normalizeSettings(s);
+  if (IS_REMOTE()) {
+    try { await remotePost("completePeriod", { period: periodId }); } catch(e) { console.error(e); }
+  } else {
+    saveStore(STORE_KEYS.SETTINGS, _cache.settings);
+  }
+}
+
+// 반기 중단: 상태를 "aborted", 활성 반기였다면 활성 해제
+async function abortPeriodRemote(periodId) {
+  const s = getSettings();
+  const p = s.periods.find(x => x.id === periodId);
+  if (p) { p.status = "aborted"; p.closedAt = new Date().toISOString(); }
+  if (s.activePeriod === periodId) s.activePeriod = null;
+  _cache.settings = normalizeSettings(s);
+  if (IS_REMOTE()) {
+    try { await remotePost("abortPeriod", { period: periodId }); } catch(e) { console.error(e); }
+  } else {
+    saveStore(STORE_KEYS.SETTINGS, _cache.settings);
+  }
 }
 
 async function clearAllEvaluationsRemote() {
@@ -1939,7 +1971,12 @@ async function submitEval() {
 
 // 결과 조회에서 사용할 반기 결정 (사용자가 드롭다운으로 고른 값 우선)
 function resolveViewPeriod() {
-  return session.viewPeriod || getActivePeriod();
+  if (session.viewPeriod) return session.viewPeriod;
+  const active = getActivePeriod();
+  if (active) return active;
+  // 활성 반기가 없으면 가장 최근 반기로 fallback
+  const periods = getSettings().periods;
+  return periods[0] ? periods[0].id : null;
 }
 
 /* ==========================================================
@@ -2460,16 +2497,26 @@ function renderAdminPeriods(body) {
     + EXEC_TARGETS["3차-조규오"].length + EXEC_TARGETS["3차-임웅걸"].length + EXEC_TARGETS["4차"].length;
   const rows = s.periods.map(p => {
     const cntAll = evs.filter(e => (e.period||"2026-H1") === p.id).length;
+    const closedDate = p.closedAt ? new Date(p.closedAt).toLocaleDateString('ko-KR') : "";
     const pill = p.status === "active"
       ? `<span class="period-pill active">활성 · 진행 중</span>`
-      : p.status === "closed"
-        ? `<span class="period-pill closed">마감됨</span>`
-        : `<span class="period-pill upcoming">예정</span>`;
+      : p.status === "aborted"
+        ? `<span class="period-pill closed" style="background:#f1f5f9;color:#475569">중단됨${closedDate ? ' · ' + esc(closedDate) : ''}</span>`
+        : p.status === "closed"
+          ? `<span class="period-pill closed" style="background:#dbeafe;color:#1e40af">완료됨${closedDate ? ' · ' + esc(closedDate) : ''}</span>`
+          : `<span class="period-pill upcoming">예정</span>`;
     const actions = [];
-    if (p.id !== active) actions.push(`<button class="small secondary" onclick="adminSetActivePeriod('${esc(p.id)}')">이 반기 활성화</button>`);
-    if (p.status !== "closed" && p.id !== active) actions.push(`<button class="small ghost" onclick="adminClosePeriod('${esc(p.id)}')">마감</button>`);
-    if (p.status === "active" && p.id === active) actions.push(`<button class="small ghost" onclick="adminClosePeriod('${esc(p.id)}')">마감</button>`);
-    if (p.status === "closed") actions.push(`<button class="small ghost" onclick="adminSetActivePeriod('${esc(p.id)}')">재개</button>`);
+    if (p.status === "active" && p.id === active) {
+      // 활성 반기: 완료 처리 + 중단
+      actions.push(`<button class="small" style="background:#059669" onclick="adminCompletePeriod('${esc(p.id)}')">완료 처리</button>`);
+      actions.push(`<button class="small secondary" onclick="adminAbortPeriod('${esc(p.id)}')">중단</button>`);
+    } else if (p.status === "closed" || p.status === "aborted") {
+      // 완료/중단된 반기: 재활성화
+      actions.push(`<button class="small secondary" onclick="adminSetActivePeriod('${esc(p.id)}')">이 반기 활성화</button>`);
+    } else if (p.status === "upcoming") {
+      // 예정된 반기: 활성화 or 삭제
+      actions.push(`<button class="small secondary" onclick="adminSetActivePeriod('${esc(p.id)}')">이 반기 활성화</button>`);
+    }
     return `
       <tr>
         <td><b>${esc(periodLabel(p.id))}</b> <span class="mini">${esc(p.id)}</span></td>
@@ -2484,8 +2531,8 @@ function renderAdminPeriods(body) {
   const nowYear = new Date().getFullYear();
   body.innerHTML = `
     <div class="notice info" style="margin-bottom:14px">
-      현재 <b>활성 반기</b>: <b style="color:var(--primary)">${esc(periodLabel(active))}</b> · 신규 평가 제출은 <b>활성 반기</b>에만 저장됩니다.
-      지난 반기의 결과는 그대로 보존되며, 관리자가 필요 시 <b>재개</b>해서 수정할 수 있습니다.
+      현재 <b>활성 반기</b>: <b style="color:var(--primary)">${active ? esc(periodLabel(active)) : "없음 (평가 제출 불가)"}</b> · 신규 평가 제출은 <b>활성 반기</b>에만 저장됩니다.
+      지난 반기의 결과는 그대로 보존되며, 관리자가 필요 시 <b>이 반기 활성화</b>로 다시 활성 반기로 지정할 수 있습니다.
     </div>
 
     <h3>반기 목록</h3>
@@ -2538,6 +2585,22 @@ async function adminClosePeriod(periodId) {
   await closePeriodRemote(periodId);
   renderAdminHome();
   setAdminTab("periods");
+}
+async function adminCompletePeriod(periodId) {
+  if (!confirm(periodLabel(periodId) + " 를 완료 처리합니다.\n\n반기가 정상 종료되어 결과가 확정되며, 이후 새 평가는 다른 반기를 활성화해야 저장됩니다.\n\n계속할까요?")) return;
+  try {
+    await completePeriodRemote(periodId);
+    renderAdminHome();
+    setAdminTab("periods");
+  } catch (e) { alert("실패: " + e.message); }
+}
+async function adminAbortPeriod(periodId) {
+  if (!confirm(periodLabel(periodId) + " 를 중단합니다.\n\n제출된 평가 데이터는 그대로 보존되지만 결과는 미확정 상태로 남습니다. 재활성화 시 이어서 진행할 수 있습니다.\n\n계속할까요?")) return;
+  try {
+    await abortPeriodRemote(periodId);
+    renderAdminHome();
+    setAdminTab("periods");
+  } catch (e) { alert("실패: " + e.message); }
 }
 async function adminCreatePeriod() {
   const y = parseInt(document.getElementById("new-period-year").value, 10);
