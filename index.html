@@ -580,8 +580,8 @@ const DEFAULT_EVALUATORS = {
     "3차-임웅걸": { name: "임웅걸", title: "부사장",   password: "IW5FHS" }, // 그 외 부장들 담당
     "4차":        { name: "양정일", title: "대표이사", password: "YJ9PTM" }  // 부장 9명 + 이사 2명 전체
   },
-  // 인사/안전관리 담당자 (근태·안전·교육 가감점 입력) — 로그인하면 가감점 관리 화면으로 진입
-  "인사/안전관리": {
+  // 인사/안전/교육 담당자 (근태·안전·교육 가감점 입력) — 로그인하면 가감점 관리 화면으로 진입
+  "인사/안전/교육": {
     "담당": { name: "강유석", title: "부장", password: "HRSFTY" }
   }
 };
@@ -1465,8 +1465,8 @@ function tryEvalLogin() {
   if (dept === "임원" && round === "4차") {
     session.isAdmin = true;
   }
-  // 인사/안전관리 담당자는 가감점 관리 화면으로 진입
-  if (dept === "인사/안전관리") {
+  // 인사/안전/교육 담당자는 가감점 관리 화면으로 진입
+  if (dept === "인사/안전/교육") {
     return go("adj-admin");
   }
   go("eval-home");
@@ -1817,7 +1817,7 @@ function getViewerRole() {
     if (session.evaluatorRound === "4차") return "exec-2nd";
     if (session.evaluatorRound === "3차-조규오" || session.evaluatorRound === "3차-임웅걸") return "exec-1st";
   }
-  if (session.evaluatorDept === "인사/안전관리") return "hr-safety";
+  if (session.evaluatorDept === "인사/안전/교육") return "hr-safety";
   if (session.evaluatorDept && session.evaluatorRound === "1차") return "dept-1st";
   if (session.evaluatorDept && session.evaluatorRound === "2차") return "dept-2nd";
   return "guest";
@@ -2041,12 +2041,12 @@ function logoutAdmin() {
   else go("home");
 }
 
-/* --- 인사/안전관리 담당자: 가감점 관리 화면 --- */
+/* --- 인사/안전/교육 담당자: 가감점 관리 화면 --- */
 // 편집 중인 값을 담아두는 세션 저장소 (page state)
 function _adjEditKey(dept, name, cat) { return dept + "|" + name + "|" + cat; }
 
 function renderAdjustmentAdmin() {
-  if (!(session.evaluatorDept === "인사/안전관리" || session.isAdmin)) return go("home");
+  if (!(session.evaluatorDept === "인사/안전/교육" || session.isAdmin)) return go("home");
   const period = getActivePeriod();
   const role = getViewerRole();
   // 편집 상태 초기화 (첫 진입 or 반기 변경 시)
@@ -2055,8 +2055,8 @@ function renderAdjustmentAdmin() {
     session.__adjEditsPeriod = period;
   }
 
-  // 대상: 일반 직원(임원 대상 제외)
-  const targets = EMPLOYEES.filter(e => !isExecEmp(e));
+  // 대상: 전 직원 (임원 부장·이사 포함)
+  const targets = EMPLOYEES.slice();
   const allDepts = [...new Set(targets.map(e => e.dept))];
 
   // 필터 상태
@@ -2117,7 +2117,7 @@ function renderAdjustmentTableBody() {
   const filterDept = session.__adjFilterDept || "";
   const searchText = (session.__adjFilterSearch || "").trim();
   const onlyChanged = !!session.__adjFilterOnlyChanged;
-  const targets = EMPLOYEES.filter(e => !isExecEmp(e));
+  const targets = EMPLOYEES.slice();
 
   // 각 직원에 대해 현재값 (편집 중이거나 서버 저장값)
   function currentValue(dept, name, cat, field) {
@@ -2222,7 +2222,7 @@ function updateAdjDirtyCount() {
 async function saveAdjustmentEdits() {
   const period = getActivePeriod();
   const now = new Date().toISOString();
-  const updatedBy = session.evaluatorName || "인사/안전관리";
+  const updatedBy = session.evaluatorName || "인사/안전/교육";
   const list = [];
   Object.keys(session.__adjEdits || {}).forEach(k => {
     const [dept, name, cat] = k.split("|");
