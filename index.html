@@ -737,6 +737,10 @@ const FORM_MANAGER = {
   grades: ["매우우수","우수","보통","미흡","매우미흡"]
 };
 
+// 등급 백분율 (매우우수 100% ~ 매우미흡 60%)
+const GRADE_RATIOS = [1.0, 0.9, 0.8, 0.7, 0.6];
+const GRADE_LABELS = ["매우우수","우수","보통","미흡","매우미흡"];
+
 const FORM_STAFF = {
   title: "업무수행평가 (대리 이하)",
   areas: [
@@ -759,6 +763,45 @@ const FORM_STAFF = {
   ],
   grades: ["매우우수","우수","보통","미흡","매우미흡"]
 };
+
+// 그룹 키 ↔ 기본 폼 매핑 (관리자가 커스텀 그룹 추가 시 서버 스키마로 override)
+const DEFAULT_FORMS = { manager: FORM_MANAGER, staff: FORM_STAFF };
+const DEFAULT_GROUP_LABELS = { manager: "관리자용 (과장이상)", staff: "대리이하용" };
+function groupKeyForEmp(emp) {
+  if (!emp) return "staff";
+  if (emp.groupKey) return emp.groupKey;
+  return emp.rankCategory === "과장이상" ? "manager" : "staff";
+}
+// 반기·그룹별 폼 스키마 조회 (서버 스냅샷 우선, 없으면 기본 폼)
+function getFormForGroup(period, groupKey) {
+  const schemas = _cache.formSchemas || [];
+  const hit = schemas.find(s => s.period === period && s.groupKey === groupKey);
+  if (hit && hit.form) return hit.form;
+  return DEFAULT_FORMS[groupKey] || FORM_STAFF;
+}
+function getFormForEmp(period, emp) { return getFormForGroup(period, groupKeyForEmp(emp)); }
+// 사용 가능한 모든 그룹 (기본 2개 + 서버 커스텀 그룹)
+function getAllGroups(period) {
+  const set = new Map();
+  Object.keys(DEFAULT_FORMS).forEach(k => set.set(k, DEFAULT_GROUP_LABELS[k] || k));
+  (_cache.formSchemas || []).forEach(s => {
+    if (period && s.period !== period) return;
+    if (!set.has(s.groupKey)) set.set(s.groupKey, s.form && s.form.title ? s.form.title : s.groupKey);
+  });
+  return [...set.entries()].map(([key, label]) => ({ key, label }));
+}
+// 항목 배점 (subItems 우선, 없으면 scores[0])
+function itemMaxPoints(item) {
+  if (item.subItems && item.subItems.length) {
+    return item.subItems.reduce((s, x) => s + (Number(x.points) || 0), 0);
+  }
+  return (item.scores && item.scores[0]) || 0;
+}
+function formTotalPoints(form) {
+  let sum = 0;
+  (form.areas || []).forEach(a => (a.items || []).forEach(it => sum += itemMaxPoints(it)));
+  return sum;
+}
 
 /* ==== 저장소 / 상태 ====
  * - BACKEND_URL 이 설정되면 Google Apps Script 서버에 저장 (원격 모드)
@@ -935,6 +978,7 @@ async function initData() {
       _cache.settings    = normalizeSettings(data.settings || deriveSettingsFromEvaluations(_cache.evaluations));
       _cache.adjustments = (data.adjustments || []);
       _cache.employees   = (data.employees || []);
+      _cache.formSchemas = (data.formSchemas || []);
       // 서버 직원 명단이 있으면 하드코딩 EMPLOYEES 를 override 하고 EXEC_TARGETS 자동 재구성
       rebuildFromEmployees(_cache.employees);
       _cache.remoteStatus = "ok";
@@ -1183,6 +1227,30 @@ async function softDeleteEmployeeRemote(dept, name) {
     await remotePost("softDeleteEmployee", { dept, name });
   } else {
     saveStore("hy_employees_v1", all);
+  }
+}
+
+/* ---- 폼 스키마 (formSchemas) ---- */
+async function saveFormSchemaRemote(period, groupKey, form) {
+  const list = _cache.formSchemas || [];
+  const idx = list.findIndex(x => x.period === period && x.groupKey === groupKey);
+  const updatedBy = session.isAdmin ? "관리자" : (session.evaluatorName || "");
+  const now = new Date().toISOString();
+  const entry = { period, groupKey, form, updatedBy, updatedAt: now };
+  if (idx >= 0) list[idx] = entry; else list.push(entry);
+  _cache.formSchemas = list;
+  if (IS_REMOTE()) {
+    await remotePost("saveFormSchema", entry);
+  } else {
+    saveStore("hy_form_schemas_v1", list);
+  }
+}
+async function deleteFormSchemaRemote(period, groupKey) {
+  _cache.formSchemas = (_cache.formSchemas || []).filter(x => !(x.period === period && x.groupKey === groupKey));
+  if (IS_REMOTE()) {
+    await remotePost("deleteFormSchema", { period, groupKey });
+  } else {
+    saveStore("hy_form_schemas_v1", _cache.formSchemas);
   }
 }
 
@@ -1628,9 +1696,10 @@ function renderEvalForm() {
   const empDept = session.selectedEmpDept || session.evaluatorDept;
   const emp = EMPLOYEES.find(e => e.dept === empDept && e.name === empName);
   if (!emp) return go("eval-home");
-  const form = emp.rankCategory === "과장이상" ? FORM_MANAGER : FORM_STAFF;
   const activePeriod = getActivePeriod();
+  const form = getFormForEmp(activePeriod, emp);
   const existing = getEvaluation(empDept, empName, round, activePeriod);
+  const totalMax = formTotalPoints(form);
   $app().innerHTML = `
     <div class="card">
       <div class="flex between">
@@ -1652,16 +1721,16 @@ function renderEvalForm() {
           <thead>
             <tr>
               <th style="width:90px">평가영역</th>
-              <th style="width:150px">평가 항목</th>
-              <th>세부 내용</th>
-              ${form.grades.map(g => `<th>${g}</th>`).join("")}
+              <th style="width:180px">평가 항목</th>
+              <th>세부 문항</th>
+              ${(form.grades || GRADE_LABELS).map(g => `<th style="width:70px">${g}</th>`).join("")}
               <th style="width:70px">점수</th>
             </tr>
           </thead>
           <tbody>
             ${renderFormItems(form, existing)}
             <tr class="total-row">
-              <td colspan="${3 + form.grades.length}">총점 (100점 만점)</td>
+              <td colspan="${3 + (form.grades || GRADE_LABELS).length}">총점 (${totalMax}점 만점)</td>
               <td id="total-score" style="text-align:center">0</td>
             </tr>
           </tbody>
@@ -1681,28 +1750,75 @@ function renderEvalForm() {
   recalcTotal();
 }
 
+// 하위 문항의 등급별 점수 계산 (매우우수 100% → 매우미흡 60%)
+function subItemGradeValue(maxPoints, gradeIndex) {
+  const raw = (Number(maxPoints) || 0) * GRADE_RATIOS[gradeIndex];
+  return Math.round(raw * 10) / 10; // 소수 첫째 자리 반올림
+}
+
 function renderFormItems(form, existing) {
   const rows = [];
+  const grades = form.grades || GRADE_LABELS;
   form.areas.forEach(area => {
-    area.items.forEach((item, idx) => {
-      const sel = existing && existing.scores ? existing.scores[item.id] : null;
-      rows.push(`
-        <tr>
-          ${idx === 0 ? `<td class="area" rowspan="${area.items.length}">${esc(area.area)}</td>` : ""}
-          <td class="item">${esc(item.name)}</td>
-          <td class="desc">${esc(item.desc)}</td>
-          ${item.scores.map((sc, i) => `
+    // 영역 rowspan 계산: 항목의 sub-item 수 합
+    let areaRows = 0;
+    area.items.forEach(it => {
+      areaRows += (it.subItems && it.subItems.length) ? it.subItems.length : 1;
+    });
+    let areaRendered = false;
+    area.items.forEach(item => {
+      const maxPts = itemMaxPoints(item);
+      if (item.subItems && item.subItems.length) {
+        // 하위 문항이 있는 경우: 각 sub-item 을 별도 행으로
+        const subItemRows = item.subItems.length;
+        item.subItems.forEach((sub, subIdx) => {
+          const key = `${item.id}#${subIdx}`;
+          const sel = existing && existing.scores ? existing.scores[key] : null;
+          const cells = grades.map((_g, gi) => {
+            const val = subItemGradeValue(sub.points, gi);
+            const checked = sel !== null && sel !== undefined && Math.abs(sel - val) < 0.05;
+            return `
+              <td style="text-align:center;padding:4px">
+                <label class="score-cell ${checked ? 'checked' : ''}" data-item="${item.id}" data-sub="${subIdx}" data-key="${key}" data-score="${val}" data-max="${sub.points}"
+                       style="display:block;cursor:pointer;padding:6px 2px;border-radius:6px;font-size:12px;font-weight:700;${checked ? 'background:var(--primary);color:#fff' : ''}">
+                  <div style="font-size:13px">${val}</div>
+                </label>
+              </td>`;
+          }).join("");
+          rows.push(`
+            <tr>
+              ${!areaRendered ? `<td class="area" rowspan="${areaRows}">${esc(area.area)}</td>` : ""}
+              ${subIdx === 0 ? `<td class="item" rowspan="${subItemRows}" style="vertical-align:middle"><div><b>${esc(item.name)}</b></div><div class="mini">${maxPts}점 · <span id="itemsum-${item.id}">-</span>/${maxPts}</div></td>` : ""}
+              <td class="desc"><b>${esc(sub.name)}</b> <span class="mini">(${sub.points}점)</span></td>
+              ${cells}
+              <td class="subtotal-cell" id="score-${key}" data-item="${item.id}">${sel ?? "-"}</td>
+            </tr>`);
+          areaRendered = true;
+        });
+      } else {
+        // 하위 문항이 없는 기존 방식 (항목 단위 채점)
+        const scores = item.scores || [maxPts, Math.round(maxPts*0.9*10)/10, Math.round(maxPts*0.8*10)/10, Math.round(maxPts*0.7*10)/10, Math.round(maxPts*0.6*10)/10];
+        const sel = existing && existing.scores ? existing.scores[item.id] : null;
+        const cells = scores.map(sc => {
+          const checked = sel === sc;
+          return `
             <td style="text-align:center;padding:4px">
-              <label class="score-cell ${sel===sc?'checked':''}" data-item="${item.id}" data-score="${sc}"
-                     style="display:block;cursor:pointer;padding:8px 2px;border-radius:6px;font-size:12px;font-weight:700;
-                            ${sel===sc?'background:var(--primary);color:#fff':''}">
+              <label class="score-cell ${checked ? 'checked' : ''}" data-item="${item.id}" data-key="${item.id}" data-score="${sc}"
+                     style="display:block;cursor:pointer;padding:8px 2px;border-radius:6px;font-size:12px;font-weight:700;${checked ? 'background:var(--primary);color:#fff' : ''}">
                 <div style="font-size:14px">${sc}</div>
               </label>
-            </td>
-          `).join("")}
-          <td class="subtotal-cell" id="score-${item.id}">${sel ?? "-"}</td>
-        </tr>
-      `);
+            </td>`;
+        }).join("");
+        rows.push(`
+          <tr>
+            ${!areaRendered ? `<td class="area" rowspan="${areaRows}">${esc(area.area)}</td>` : ""}
+            <td class="item"><div><b>${esc(item.name)}</b></div><div class="mini">${maxPts}점</div></td>
+            <td class="desc">${esc(item.desc || "")}</td>
+            ${cells}
+            <td class="subtotal-cell" id="score-${item.id}" data-item="${item.id}">${sel ?? "-"}</td>
+          </tr>`);
+        areaRendered = true;
+      }
     });
   });
   return rows.join("");
@@ -1711,10 +1827,11 @@ function renderFormItems(form, existing) {
 function attachFormHandlers(form) {
   document.querySelectorAll(".score-cell").forEach(el => {
     el.addEventListener("click", () => {
+      const key = el.dataset.key;
       const item = el.dataset.item;
-      const score = parseInt(el.dataset.score, 10);
-      // 같은 행(item) 하이라이트 해제
-      document.querySelectorAll(`.score-cell[data-item="${item}"]`).forEach(c => {
+      const score = parseFloat(el.dataset.score);
+      // 같은 셀 그룹(같은 key) 하이라이트 해제
+      document.querySelectorAll(`.score-cell[data-key="${key}"]`).forEach(c => {
         c.classList.remove("checked");
         c.style.background = "";
         c.style.color = "";
@@ -1722,20 +1839,38 @@ function attachFormHandlers(form) {
       el.classList.add("checked");
       el.style.background = "var(--primary)";
       el.style.color = "#fff";
-      document.getElementById(`score-${item}`).textContent = score;
+      const cell = document.getElementById(`score-${key}`);
+      if (cell) cell.textContent = Number.isInteger(score) ? score : score.toFixed(1);
+      // 항목 소계 업데이트
+      updateItemSum(item);
       recalcTotal();
     });
   });
 }
 
+function updateItemSum(itemId) {
+  const el = document.getElementById(`itemsum-${itemId}`);
+  if (!el) return;
+  let sum = 0, hasAny = false;
+  document.querySelectorAll(`.subtotal-cell[data-item="${itemId}"]`).forEach(c => {
+    const v = parseFloat(c.textContent);
+    if (!isNaN(v)) { sum += v; hasAny = true; }
+  });
+  el.textContent = hasAny ? (Number.isInteger(sum) ? sum : sum.toFixed(1)) : "-";
+}
+
 function recalcTotal() {
   let total = 0;
   document.querySelectorAll(".subtotal-cell").forEach(c => {
-    const v = parseInt(c.textContent, 10);
+    const v = parseFloat(c.textContent);
     if (!isNaN(v)) total += v;
   });
   const el = document.getElementById("total-score");
-  if (el) el.textContent = total;
+  if (el) el.textContent = Number.isInteger(total) ? total : total.toFixed(1);
+  // 항목 소계 셀 초기화
+  document.querySelectorAll("[id^='itemsum-']").forEach(el2 => {
+    updateItemSum(el2.id.replace("itemsum-", ""));
+  });
 }
 
 async function submitEval() {
@@ -1743,8 +1878,8 @@ async function submitEval() {
   const empName = session.selectedEmp;
   const empDept = session.selectedEmpDept || session.evaluatorDept;
   const emp = EMPLOYEES.find(e => e.dept === empDept && e.name === empName);
-  const form = emp.rankCategory === "과장이상" ? FORM_MANAGER : FORM_STAFF;
   const activePeriod = getActivePeriod();
+  const form = getFormForEmp(activePeriod, emp);
   // 안전장치: 활성 반기가 어떤 이유로든 마감 상태라면 제출 차단
   if (isPeriodClosed(activePeriod) && !session.isAdmin) {
     document.getElementById("form-err").innerHTML =
@@ -1756,12 +1891,19 @@ async function submitEval() {
   let missing = [];
   form.areas.forEach(area => {
     area.items.forEach(item => {
-      const cell = document.getElementById(`score-${item.id}`);
-      const v = parseInt(cell.textContent, 10);
-      if (isNaN(v)) {
-        missing.push(item.name);
+      if (item.subItems && item.subItems.length) {
+        item.subItems.forEach((sub, subIdx) => {
+          const key = `${item.id}#${subIdx}`;
+          const cell = document.getElementById(`score-${key}`);
+          const v = parseFloat(cell.textContent);
+          if (isNaN(v)) missing.push(`${item.name} / ${sub.name}`);
+          else scores[key] = v;
+        });
       } else {
-        scores[item.id] = v;
+        const cell = document.getElementById(`score-${item.id}`);
+        const v = parseFloat(cell.textContent);
+        if (isNaN(v)) missing.push(item.name);
+        else scores[item.id] = v;
       }
     });
   });
@@ -2281,6 +2423,7 @@ function renderAdminHome() {
         <div class="tab ${tab==='periods'?'active':''}"  onclick="setAdminTab('periods')">반기 관리</div>
         <div class="tab ${tab==='compare'?'active':''}"  onclick="setAdminTab('compare')">반기 비교</div>
         <div class="tab ${tab==='employees'?'active':''}" onclick="setAdminTab('employees')">직원 관리</div>
+        <div class="tab ${tab==='forms'?'active':''}" onclick="setAdminTab('forms')">평가 항목 관리</div>
         <div class="tab ${tab==='security'?'active':''}" onclick="setAdminTab('security')">보안</div>
       </div>
       <div id="admin-body"></div>
@@ -2292,7 +2435,7 @@ function renderAdminHome() {
 function setAdminTab(tab) {
   session.adminTab = tab;
   document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
-  const map = { results:0, dept:1, accounts:2, data:3, periods:4, compare:5, employees:6, security:7 };
+  const map = { results:0, dept:1, accounts:2, data:3, periods:4, compare:5, employees:6, forms:7, security:8 };
   const tabs = document.querySelectorAll(".tab");
   if (tabs[map[tab]]) tabs[map[tab]].classList.add("active");
   const body = document.getElementById("admin-body");
@@ -2303,6 +2446,7 @@ function setAdminTab(tab) {
   else if (tab === "periods") renderAdminPeriods(body);
   else if (tab === "compare") renderAdminCompare(body);
   else if (tab === "employees") renderAdminEmployees(body);
+  else if (tab === "forms") renderAdminForms(body);
   else if (tab === "security") renderAdminSecurity(body);
 }
 
@@ -2765,6 +2909,244 @@ async function empReinstate(dept, name) {
     await upsertEmployeeRemote({ dept, name, rank: (getServerEmployees().find(e=>e.dept===dept&&e.name===name)||{}).rank || "사원", active: true, leftAt: "" });
     renderAdminEmployees(document.getElementById("admin-body"));
   } catch(e) { alert("실패: " + e.message); }
+}
+
+/* --- 관리자: 평가 항목 관리 --- */
+function renderAdminForms(body) {
+  const s = getSettings();
+  if (!session.__formsPeriod) session.__formsPeriod = s.activePeriod;
+  if (!session.__formsGroup) session.__formsGroup = "manager";
+  if (!session.__formsDraft) session.__formsDraft = null; // 현재 편집중 스냅샷 { period, groupKey, form }
+
+  const period = session.__formsPeriod;
+  const groupKey = session.__formsGroup;
+  const periodObj = s.periods.find(p => p.id === period);
+  const isEditable = periodObj && periodObj.status === "closed";
+  const activePeriod = s.activePeriod;
+
+  // 편집 대상이 바뀌면 draft 재로드
+  if (!session.__formsDraft || session.__formsDraft.period !== period || session.__formsDraft.groupKey !== groupKey) {
+    const source = getFormForGroup(period, groupKey);
+    session.__formsDraft = { period, groupKey, form: JSON.parse(JSON.stringify(source)) };
+  }
+
+  const groups = getAllGroups(period);
+  const periodOpts = s.periods.map(p => {
+    const label = periodLabel(p.id) + (p.id === activePeriod ? " (진행 중)" : (p.status === "closed" ? " (마감)" : ""));
+    return `<option value="${esc(p.id)}"${p.id === period ? " selected" : ""}>${esc(label)}</option>`;
+  }).join("");
+  const groupOpts = groups.map(g => `<option value="${esc(g.key)}"${g.key === groupKey ? " selected" : ""}>${esc(g.label)}</option>`).join("");
+
+  const form = session.__formsDraft.form;
+  const total = formTotalPoints(form);
+  const totalOk = total === 100;
+
+  body.innerHTML = `
+    <div class="notice info" style="margin-bottom:12px;line-height:1.55">
+      평가 항목·배점을 반기별로 관리합니다. 저장하면 해당 반기·그룹의 <b>스냅샷</b>으로 저장돼 이후 평가에 적용됩니다.
+      <br>진행 중인 반기는 안전을 위해 <b>편집 잠금</b>됩니다. 새 반기를 만들거나 이전 반기가 마감된 뒤에만 수정할 수 있습니다.
+      <br><b>총점은 정확히 100점</b>이 되어야 저장할 수 있고, 항목에 <b>하위 문항</b>을 추가하면 각 문항이 별도 등급으로 채점됩니다.
+    </div>
+
+    <div class="flex" style="gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px">
+      <div>
+        <label class="mini">반기</label>
+        <select id="forms-period" onchange="onFormsChangePeriod(this.value)">${periodOpts}</select>
+      </div>
+      <div>
+        <label class="mini">평가 그룹</label>
+        <select id="forms-group" onchange="onFormsChangeGroup(this.value)">${groupOpts}</select>
+      </div>
+      <button class="small secondary" onclick="onFormsAddGroup()">+ 새 그룹</button>
+      ${groups.find(g => g.key === groupKey && !DEFAULT_FORMS[g.key]) ? `<button class="small danger" onclick="onFormsDeleteGroup()">이 그룹 삭제</button>` : ""}
+      <div style="margin-left:auto;text-align:right">
+        <div class="mini">총점 합계</div>
+        <div style="font-size:20px;font-weight:700;color:${totalOk ? 'var(--success)' : 'var(--danger)'}">${total} / 100${totalOk ? ' ✓' : ' (100점 강제)'}</div>
+      </div>
+      <button class="secondary" onclick="onFormsRevert()">되돌리기</button>
+      <button ${!isEditable || !totalOk ? "disabled" : ""} onclick="onFormsSave()" title="${!isEditable ? '진행 중인 반기는 편집할 수 없습니다' : (!totalOk ? '총점이 100점이어야 저장할 수 있습니다' : '')}">💾 저장</button>
+    </div>
+
+    ${!isEditable ? `<div class="notice warn" style="margin-bottom:12px">⚠ 이 반기(${esc(periodLabel(period))})는 진행 중입니다. 편집을 저장하려면 [반기 관리]에서 먼저 마감하거나 새 반기를 만들어 주세요.</div>` : ""}
+
+    <div style="margin-bottom:8px">
+      <label class="mini">평가표 제목</label>
+      <input type="text" id="forms-title" value="${esc(form.title || "")}" oninput="onFormsFieldChange('title', this.value)"/>
+    </div>
+
+    <div id="forms-areas">
+      ${form.areas.map((area, ai) => renderFormsAreaEditor(area, ai)).join("")}
+    </div>
+
+    <button class="secondary" style="width:100%;margin-top:10px" onclick="onFormsAddArea()">+ 새 영역 추가</button>
+    <div id="forms-msg" class="mini" style="margin-top:10px"></div>
+  `;
+}
+
+function renderFormsAreaEditor(area, ai) {
+  const areaTotal = (area.items || []).reduce((s, it) => s + itemMaxPoints(it), 0);
+  return `
+    <div class="card" style="background:var(--surface-1);margin-bottom:10px;padding:14px">
+      <div class="flex" style="gap:8px;align-items:center;margin-bottom:10px">
+        <input type="text" value="${esc(area.area || "")}" oninput="onFormsFieldChange('area-${ai}', this.value)" style="flex:1;font-weight:700"/>
+        <span class="mini">${(area.items||[]).length}개 항목 · 소계 ${areaTotal}점</span>
+        <button class="small danger" onclick="onFormsRemoveArea(${ai})">영역 삭제</button>
+      </div>
+      ${(area.items || []).map((it, ii) => renderFormsItemEditor(ai, ii, it)).join("")}
+      <button class="small secondary" onclick="onFormsAddItem(${ai})" style="width:100%;margin-top:4px">+ 항목 추가</button>
+    </div>
+  `;
+}
+
+function renderFormsItemEditor(ai, ii, item) {
+  const maxPts = itemMaxPoints(item);
+  const hasSub = !!(item.subItems && item.subItems.length);
+  return `
+    <div style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px;background:#fff">
+      <div class="flex" style="gap:8px;align-items:center;margin-bottom:6px">
+        <span class="mini" style="font-family:monospace;padding:2px 6px;background:var(--bg);border-radius:4px">${esc(item.id)}</span>
+        <input type="text" value="${esc(item.name || "")}" oninput="onFormsFieldChange('item-${ai}-${ii}-name', this.value)" style="flex:1;font-weight:600"/>
+        <span class="mini">배점 ${maxPts}점</span>
+        <button class="small danger" onclick="onFormsRemoveItem(${ai},${ii})">항목 삭제</button>
+      </div>
+      ${!hasSub ? `
+        <div class="flex" style="gap:8px;align-items:flex-start;margin-bottom:6px">
+          <textarea rows="2" placeholder="세부 설명" oninput="onFormsFieldChange('item-${ai}-${ii}-desc', this.value)" style="flex:1;font-size:12px">${esc(item.desc || "")}</textarea>
+          <div>
+            <label class="mini" style="display:block">항목 총 배점</label>
+            <input type="number" min="1" max="100" value="${(item.scores && item.scores[0]) || 10}" oninput="onFormsFieldChange('item-${ai}-${ii}-max', this.value)" style="width:70px;text-align:center"/>
+          </div>
+        </div>
+        <button class="small secondary" onclick="onFormsConvertToSub(${ai},${ii})">↓ 하위 문항으로 분리</button>
+      ` : `
+        <div class="mini" style="margin-bottom:6px;color:var(--muted)">하위 문항 (각 문항이 별도 등급으로 채점됩니다)</div>
+        ${(item.subItems || []).map((sub, si) => `
+          <div class="flex" style="gap:6px;align-items:center;margin-bottom:4px;padding-left:10px">
+            <input type="text" value="${esc(sub.name || "")}" placeholder="문항" oninput="onFormsFieldChange('sub-${ai}-${ii}-${si}-name', this.value)" style="flex:1;font-size:13px"/>
+            <input type="number" min="0.5" step="0.5" value="${sub.points || 1}" oninput="onFormsFieldChange('sub-${ai}-${ii}-${si}-points', this.value)" style="width:60px;text-align:center"/>
+            <span class="mini">점</span>
+            <button class="small danger" onclick="onFormsRemoveSub(${ai},${ii},${si})">×</button>
+          </div>
+        `).join("")}
+        <button class="small secondary" onclick="onFormsAddSub(${ai},${ii})" style="margin-top:4px;margin-left:10px">+ 하위 문항</button>
+      `}
+    </div>
+  `;
+}
+
+// ---- 편집 이벤트 핸들러 ----
+function onFormsChangePeriod(v) { session.__formsPeriod = v; session.__formsDraft = null; renderAdminForms(document.getElementById("admin-body")); }
+function onFormsChangeGroup(v)  { session.__formsGroup = v;  session.__formsDraft = null; renderAdminForms(document.getElementById("admin-body")); }
+function onFormsRevert() { session.__formsDraft = null; renderAdminForms(document.getElementById("admin-body")); }
+
+function onFormsFieldChange(key, val) {
+  const form = session.__formsDraft.form;
+  if (key === "title") { form.title = val; return; }
+  if (key.startsWith("area-")) {
+    const ai = +key.split("-")[1];
+    form.areas[ai].area = val;
+    return;
+  }
+  const parts = key.split("-"); // item-ai-ii-field or sub-ai-ii-si-field
+  if (parts[0] === "item") {
+    const ai = +parts[1], ii = +parts[2], field = parts[3];
+    const item = form.areas[ai].items[ii];
+    if (field === "name") item.name = val;
+    else if (field === "desc") item.desc = val;
+    else if (field === "max") {
+      const pts = Math.max(1, parseInt(val, 10) || 1);
+      item.scores = [pts, Math.round(pts*0.9*10)/10, Math.round(pts*0.8*10)/10, Math.round(pts*0.7*10)/10, Math.round(pts*0.6*10)/10];
+      renderAdminForms(document.getElementById("admin-body"));
+      return;
+    }
+  } else if (parts[0] === "sub") {
+    const ai = +parts[1], ii = +parts[2], si = +parts[3], field = parts[4];
+    const sub = form.areas[ai].items[ii].subItems[si];
+    if (field === "name") sub.name = val;
+    else if (field === "points") {
+      sub.points = Math.max(0.5, parseFloat(val) || 0.5);
+      renderAdminForms(document.getElementById("admin-body"));
+      return;
+    }
+  }
+}
+
+function onFormsAddArea() {
+  session.__formsDraft.form.areas.push({ area: "새 영역", items: [] });
+  renderAdminForms(document.getElementById("admin-body"));
+}
+function onFormsRemoveArea(ai) {
+  if (!confirm("이 영역과 하위 모든 항목을 삭제하시겠습니까?")) return;
+  session.__formsDraft.form.areas.splice(ai, 1);
+  renderAdminForms(document.getElementById("admin-body"));
+}
+function onFormsAddItem(ai) {
+  const nextId = "x" + Date.now().toString(36).slice(-5);
+  session.__formsDraft.form.areas[ai].items.push({ id: nextId, name: "새 항목", desc: "", scores: [10,9,8,7,6] });
+  renderAdminForms(document.getElementById("admin-body"));
+}
+function onFormsRemoveItem(ai, ii) {
+  if (!confirm("이 항목을 삭제하시겠습니까? 기존 평가의 해당 항목 점수도 무효화됩니다.")) return;
+  session.__formsDraft.form.areas[ai].items.splice(ii, 1);
+  renderAdminForms(document.getElementById("admin-body"));
+}
+function onFormsConvertToSub(ai, ii) {
+  const item = session.__formsDraft.form.areas[ai].items[ii];
+  const max = itemMaxPoints(item);
+  const lines = (item.desc || "새 문항").split("\n").map(x => x.trim()).filter(Boolean);
+  const n = Math.max(1, lines.length);
+  const per = Math.floor((max / n) * 10) / 10;
+  const remainder = Math.round((max - per * (n-1)) * 10) / 10;
+  item.subItems = lines.map((name, idx) => ({ name, points: idx === n-1 ? remainder : per }));
+  if (!item.subItems.length) item.subItems = [{ name: "새 문항", points: max }];
+  delete item.scores;
+  renderAdminForms(document.getElementById("admin-body"));
+}
+function onFormsAddSub(ai, ii) {
+  const item = session.__formsDraft.form.areas[ai].items[ii];
+  if (!item.subItems) item.subItems = [];
+  item.subItems.push({ name: "새 문항", points: 1 });
+  renderAdminForms(document.getElementById("admin-body"));
+}
+function onFormsRemoveSub(ai, ii, si) {
+  const item = session.__formsDraft.form.areas[ai].items[ii];
+  item.subItems.splice(si, 1);
+  if (item.subItems.length === 0) {
+    item.scores = [10,9,8,7,6];
+    delete item.subItems;
+  }
+  renderAdminForms(document.getElementById("admin-body"));
+}
+function onFormsAddGroup() {
+  const key = prompt("새 그룹 키를 입력하세요 (영문/숫자, 예: exec)");
+  if (!key || !/^[a-z0-9_-]+$/i.test(key)) return alert("영문/숫자/-/_ 만 사용 가능합니다.");
+  if (getAllGroups(session.__formsPeriod).find(g => g.key === key)) return alert("이미 존재하는 그룹입니다.");
+  const label = prompt("표시 이름 (예: 임원용)", key) || key;
+  const draft = { title: label + " 평가표", areas: [{ area: "새 영역", items: [{ id: "n1", name: "새 항목", desc: "", scores: [10,9,8,7,6] }] }], grades: GRADE_LABELS.slice() };
+  session.__formsGroup = key;
+  session.__formsDraft = { period: session.__formsPeriod, groupKey: key, form: draft };
+  renderAdminForms(document.getElementById("admin-body"));
+}
+async function onFormsDeleteGroup() {
+  if (!confirm("이 사용자 정의 그룹 스냅샷을 삭제하시겠습니까? (기본 그룹은 삭제할 수 없습니다)")) return;
+  try {
+    await deleteFormSchemaRemote(session.__formsPeriod, session.__formsGroup);
+    session.__formsGroup = "manager";
+    session.__formsDraft = null;
+    renderAdminForms(document.getElementById("admin-body"));
+  } catch (e) { alert("삭제 실패: " + e.message); }
+}
+async function onFormsSave() {
+  const draft = session.__formsDraft;
+  if (!draft) return;
+  const total = formTotalPoints(draft.form);
+  if (total !== 100) return alert("총점이 100점이어야 저장할 수 있습니다. (현재 " + total + "점)");
+  try {
+    await saveFormSchemaRemote(draft.period, draft.groupKey, draft.form);
+    document.getElementById("forms-msg").innerHTML = `<span style="color:var(--accent)">✅ ${periodLabel(draft.period)} · ${esc(draft.groupKey)} 스냅샷 저장됨</span>`;
+  } catch (e) {
+    document.getElementById("forms-msg").innerHTML = `<span style="color:var(--danger)">저장 실패: ${esc(e.message)}</span>`;
+  }
 }
 
 /* --- 관리자 보안 (비밀번호 변경) --- */
@@ -3770,6 +4152,20 @@ window.empFormCancel = empFormCancel;
 window.empFormSave = empFormSave;
 window.empSoftDelete = empSoftDelete;
 window.empReinstate = empReinstate;
+window.onFormsChangePeriod = onFormsChangePeriod;
+window.onFormsChangeGroup = onFormsChangeGroup;
+window.onFormsRevert = onFormsRevert;
+window.onFormsFieldChange = onFormsFieldChange;
+window.onFormsAddArea = onFormsAddArea;
+window.onFormsRemoveArea = onFormsRemoveArea;
+window.onFormsAddItem = onFormsAddItem;
+window.onFormsRemoveItem = onFormsRemoveItem;
+window.onFormsConvertToSub = onFormsConvertToSub;
+window.onFormsAddSub = onFormsAddSub;
+window.onFormsRemoveSub = onFormsRemoveSub;
+window.onFormsAddGroup = onFormsAddGroup;
+window.onFormsDeleteGroup = onFormsDeleteGroup;
+window.onFormsSave = onFormsSave;
 
 async function bootstrap() {
   // 초기 로딩 스피너
