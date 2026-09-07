@@ -3013,7 +3013,15 @@ async function empReinstate(dept, name) {
 /* --- 관리자: 평가 항목 관리 --- */
 function renderAdminForms(body) {
   const s = getSettings();
-  if (!session.__formsPeriod) session.__formsPeriod = s.activePeriod;
+  // 기본 선택 로직:
+  //  1) 이미 유효한 값이 있으면 그대로 사용
+  //  2) 없으면 편집 가능한(마감·중단됨) 가장 최근 반기를 기본으로
+  //  3) 그것도 없으면 활성 반기(잠금이라도) → 그것도 없으면 첫 번째
+  const hasValid = session.__formsPeriod && s.periods.find(p => p.id === session.__formsPeriod);
+  if (!hasValid) {
+    const editable = s.periods.find(p => p.status === "closed" || p.status === "aborted");
+    session.__formsPeriod = (editable && editable.id) || s.activePeriod || (s.periods[0] && s.periods[0].id) || null;
+  }
   if (!session.__formsGroup) session.__formsGroup = "manager";
   if (!session.__formsDraft) session.__formsDraft = null; // 현재 편집중 스냅샷 { period, groupKey, form }
 
