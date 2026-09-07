@@ -1597,7 +1597,14 @@ function tryEvalLogin() {
     errEl.innerHTML = `<div class="notice err">해당 차수 평가자가 등록되어 있지 않습니다.</div>`;
     return;
   }
-  if (pw !== info.password) {
+  // 비밀번호 비교: 시트가 숫자로 저장해 앞자리 0이 사라진 경우도 허용
+  //  (예: 시트값이 1067952455 인데 사용자 입력이 01067952455 인 경우)
+  const pwStr = String(pw);
+  const expPw = String(info.password == null ? "" : info.password);
+  const pwMatch = pwStr === expPw
+               || (expPw && ("0" + expPw) === pwStr)
+               || (pwStr && ("0" + pwStr) === expPw);
+  if (!pwMatch) {
     errEl.innerHTML = `<div class="notice err">비밀번호가 일치하지 않습니다.</div>`;
     return;
   }
@@ -3579,6 +3586,7 @@ function renderAdminAccounts(body) {
             <td><span class="pw-view" id="pw-${i}" data-dept="${esc(r.dept)}" data-round="${esc(r.round)}" data-val="${esc(r.password)}">${esc(r.password)}</span></td>
             <td>
               <button class="small" onclick="regenPw('${esc(r.dept)}','${esc(r.round)}')">비밀번호 재발급</button>
+              <button class="small secondary" onclick="setPwManual('${esc(r.dept)}','${esc(r.round)}')">비밀번호 직접 설정</button>
             </td>
           </tr>
         `;}).join("")}
@@ -3618,6 +3626,21 @@ async function regenPw(dept, round) {
     renderAdminAccounts(document.getElementById("admin-body"));
   } catch (e) {
     alert("비밀번호 재발급 실패: " + e.message);
+  }
+}
+
+// 관리자가 특정 비밀번호를 직접 지정 (앞자리 0 유지 필요할 때 유용)
+async function setPwManual(dept, round) {
+  const np = prompt(`${dept} ${round} 평가자의 비밀번호를 직접 입력하세요.\n(공백 없이, 앞자리 0도 그대로 유지됩니다)`, "");
+  if (np === null) return;
+  const val = String(np).trim();
+  if (!val) { alert("비밀번호를 입력해 주세요."); return; }
+  try {
+    await updateEvaluatorRemote(dept, round, { password: val });
+    alert(`설정 완료: ${val}`);
+    renderAdminAccounts(document.getElementById("admin-body"));
+  } catch (e) {
+    alert("비밀번호 설정 실패: " + e.message);
   }
 }
 
@@ -4267,6 +4290,7 @@ window.logoutAdmin = logoutAdmin;
 window.setAdminTab = setAdminTab;
 window.toggleAllPw = toggleAllPw;
 window.regenPw = regenPw;
+window.setPwManual = setPwManual;
 window.exportAccountsCsv = exportAccountsCsv;
 window.exportEvaluationsCsv = exportEvaluationsCsv;
 window.exportEvaluationsDetailCsv = exportEvaluationsDetailCsv;
