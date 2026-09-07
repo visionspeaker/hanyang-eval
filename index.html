@@ -3247,11 +3247,31 @@ async function onFormsSave() {
   if (!draft) return;
   const total = formTotalPoints(draft.form);
   if (total !== 100) return alert("총점이 100점이어야 저장할 수 있습니다. (현재 " + total + "점)");
+  // 진행 상태를 확실히 보여주기 위해 저장 버튼 텍스트 변경 + 비활성화
+  const btns = document.querySelectorAll('button[onclick="onFormsSave()"]');
+  const originalTexts = [];
+  btns.forEach(b => { originalTexts.push(b.innerHTML); b.innerHTML = "💾 저장 중…"; b.disabled = true; });
+  const msgEl = document.getElementById("forms-msg");
+  if (msgEl) msgEl.innerHTML = `<span class="mini" style="color:var(--muted)">저장 중… 잠시 기다려 주세요.</span>`;
   try {
     await saveFormSchemaRemote(draft.period, draft.groupKey, draft.form);
-    document.getElementById("forms-msg").innerHTML = `<span style="color:var(--accent)">✅ ${periodLabel(draft.period)} · ${esc(draft.groupKey)} 스냅샷 저장됨</span>`;
+    // 상단에도 성공 배너 표시 (사용자가 아래 메시지를 못 볼 수 있음)
+    const banner = `<div class="notice" style="background:#dcfce7;color:#166534;border:1px solid #86efac;margin-bottom:12px;padding:10px 12px;border-radius:8px;font-weight:600">✅ 저장 완료 — ${esc(periodLabel(draft.period))} · ${esc(draft.groupKey)} 스냅샷이 저장되었습니다.</div>`;
+    const body = document.getElementById("admin-body");
+    // 기존 배너 제거 후 상단에 삽입
+    body.querySelectorAll('.forms-save-banner').forEach(el => el.remove());
+    const wrap = document.createElement('div');
+    wrap.className = 'forms-save-banner';
+    wrap.innerHTML = banner;
+    body.insertBefore(wrap, body.firstChild);
+    if (msgEl) msgEl.innerHTML = `<span style="color:var(--success);font-weight:600">✅ 저장됨 · ${new Date().toLocaleTimeString('ko-KR')}</span>`;
+    // 3초 뒤 상단 배너 자동 제거
+    setTimeout(() => { wrap.remove(); }, 3500);
   } catch (e) {
-    document.getElementById("forms-msg").innerHTML = `<span style="color:var(--danger)">저장 실패: ${esc(e.message)}</span>`;
+    if (msgEl) msgEl.innerHTML = `<span style="color:var(--danger);font-weight:600">❌ 저장 실패: ${esc(e.message)}</span>`;
+    alert("저장 실패: " + e.message);
+  } finally {
+    btns.forEach((b, i) => { b.innerHTML = originalTexts[i] || "💾 저장"; b.disabled = false; });
   }
 }
 
