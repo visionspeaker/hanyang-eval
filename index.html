@@ -1306,7 +1306,8 @@ async function bulkUpsertAdjustmentsRemote(list) {
   }
 }
 
-/* ==== 세션 (메모리) ==== */
+/* ==== 세션 (메모리 + localStorage 지속) ==== */
+const SESSION_STORAGE_KEY = "hy_session_v1";
 let session = {
   evaluatorDept: null,
   evaluatorRound: null,
@@ -1317,6 +1318,37 @@ let session = {
   adminTab: "results", // results | dept | accounts | data | periods | compare | security
   viewPeriod: null    // 결과 조회에서 사용자가 선택한 반기 (null 이면 활성 반기)
 };
+
+// 로그인 상태 지속: 한 번 로그인하면 로그아웃 전까지 브라우저 새로고침/재방문에도 유지
+function saveSession() {
+  try {
+    const persisted = {
+      evaluatorDept: session.evaluatorDept,
+      evaluatorRound: session.evaluatorRound,
+      evaluatorName: session.evaluatorName,
+      isAdmin: session.isAdmin,
+      adminTab: session.adminTab
+    };
+    localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(persisted));
+  } catch (e) { /* localStorage 사용 불가 환경 무시 */ }
+}
+function loadSession() {
+  try {
+    const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+    if (!raw) return;
+    const p = JSON.parse(raw);
+    if (p && typeof p === "object") {
+      session.evaluatorDept = p.evaluatorDept || null;
+      session.evaluatorRound = p.evaluatorRound || null;
+      session.evaluatorName = p.evaluatorName || null;
+      session.isAdmin = !!p.isAdmin;
+      if (p.adminTab) session.adminTab = p.adminTab;
+    }
+  } catch (e) { /* 파싱 실패 시 무시 */ }
+}
+function clearSession() {
+  try { localStorage.removeItem(SESSION_STORAGE_KEY); } catch (e) {}
+}
 
 /* ==== 렌더링 ==== */
 const $app = () => document.getElementById("app");
@@ -1565,6 +1597,7 @@ function tryEvalLogin() {
   if (dept === "임원" && round === "4차") {
     session.isAdmin = true;
   }
+  saveSession();
   // 인사/안전/교육 담당자는 가감점 관리 화면으로 진입
   if (dept === "인사/안전/교육") {
     return go("adj-admin");
@@ -1585,6 +1618,8 @@ function logoutEvaluator() {
   session.evaluatorName = null;
   session.selectedEmp = null;
   session.selectedEmpDept = null;
+  // 관리자 세션도 남아있지 않으면 저장 자체를 비움
+  if (session.isAdmin) saveSession(); else clearSession();
   go("home");
 }
 
@@ -2210,14 +2245,15 @@ function tryAdminLogin() {
     return;
   }
   session.isAdmin = true;
+  saveSession();
   go("admin-home");
 }
 
 function logoutAdmin() {
   session.isAdmin = false;
   // 대표이사가 평가자 세션을 통해 들어온 경우 평가자 로그인까지는 유지 → 평가자 홈으로 복귀
-  if (session.evaluatorDept) go("eval-home");
-  else go("home");
+  if (session.evaluatorDept) { saveSession(); go("eval-home"); }
+  else { clearSession(); go("home"); }
 }
 
 /* --- 인사/안전/교육 담당자: 가감점 관리 화면 --- */
@@ -4239,6 +4275,8 @@ async function bootstrap() {
     </div>
   `;
   await initData();
+  // 저장된 로그인 세션 복원 (한 번 로그인하면 로그아웃 전까지 유지)
+  loadSession();
   render();
 }
 bootstrap();
