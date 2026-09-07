@@ -1470,8 +1470,8 @@ function renderHome() {
       </div>
 
       <div class="choice-card c-admin" role="button" tabindex="0"
-           onclick="go('admin-login')"
-           onkeydown="if(event.key==='Enter')go('admin-login')">
+           onclick="enterAdmin()"
+           onkeydown="if(event.key==='Enter')enterAdmin()">
         <span class="icon-wrap">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
@@ -1507,7 +1507,18 @@ function renderHome() {
 // 평가자 로그인 후 이동할 탭을 미리 지정해 두고 로그인 화면으로 이동
 function startEvaluatorFlow(targetTab) {
   session.postLoginTab = targetTab;
+  // 이미 평가자로 로그인된 상태면 재로그인 없이 바로 진행
+  if (session.evaluatorDept && session.evaluatorRound) {
+    if (session.evaluatorDept === "인사/안전/교육") return go("adj-admin");
+    return go("eval-home");
+  }
   go("eval-login");
+}
+
+// 관리자 카드 클릭 시: 이미 관리자로 로그인된 상태면 대시보드로, 아니면 로그인 화면으로
+function enterAdmin() {
+  if (session.isAdmin) go("admin-home");
+  else go("admin-login");
 }
 
 /* --- 평가자 로그인 --- */
@@ -4244,6 +4255,7 @@ function deptAverage(results) {
 
 /* 초기 렌더 */
 window.go = go;
+window.enterAdmin = enterAdmin;
 window.startEvaluatorFlow = startEvaluatorFlow;
 window.tryEvalLogin = tryEvalLogin;
 window.logoutEvaluator = logoutEvaluator;
