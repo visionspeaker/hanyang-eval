@@ -3020,7 +3020,7 @@ function renderAdminForms(body) {
   const period = session.__formsPeriod;
   const groupKey = session.__formsGroup;
   const periodObj = s.periods.find(p => p.id === period);
-  const isEditable = periodObj && periodObj.status === "closed";
+  const isEditable = !!periodObj && (periodObj.status === "closed" || periodObj.status === "aborted");
   const activePeriod = s.activePeriod;
 
   // 편집 대상이 바뀌면 draft 재로드
@@ -3031,7 +3031,12 @@ function renderAdminForms(body) {
 
   const groups = getAllGroups(period);
   const periodOpts = s.periods.map(p => {
-    const label = periodLabel(p.id) + (p.id === activePeriod ? " (진행 중)" : (p.status === "closed" ? " (마감)" : ""));
+    let statusTag = "";
+    if (p.id === activePeriod) statusTag = " (진행 중)";
+    else if (p.status === "closed") statusTag = " (마감)";
+    else if (p.status === "aborted") statusTag = " (중단됨)";
+    else if (p.status === "upcoming") statusTag = " (예정)";
+    const label = periodLabel(p.id) + statusTag;
     return `<option value="${esc(p.id)}"${p.id === period ? " selected" : ""}>${esc(label)}</option>`;
   }).join("");
   const groupOpts = groups.map(g => `<option value="${esc(g.key)}"${g.key === groupKey ? " selected" : ""}>${esc(g.label)}</option>`).join("");
@@ -3056,28 +3061,30 @@ function renderAdminForms(body) {
         <label class="mini">평가 그룹</label>
         <select id="forms-group" onchange="onFormsChangeGroup(this.value)">${groupOpts}</select>
       </div>
-      <button class="small secondary" onclick="onFormsAddGroup()">+ 새 그룹</button>
-      ${groups.find(g => g.key === groupKey && !DEFAULT_FORMS[g.key]) ? `<button class="small danger" onclick="onFormsDeleteGroup()">이 그룹 삭제</button>` : ""}
+      <button class="small secondary" ${!isEditable ? "disabled" : ""} onclick="onFormsAddGroup()">+ 새 그룹</button>
+      ${groups.find(g => g.key === groupKey && !DEFAULT_FORMS[g.key]) ? `<button class="small danger" ${!isEditable ? "disabled" : ""} onclick="onFormsDeleteGroup()">이 그룹 삭제</button>` : ""}
       <div style="margin-left:auto;text-align:right">
         <div class="mini">총점 합계</div>
         <div style="font-size:20px;font-weight:700;color:${totalOk ? 'var(--success)' : 'var(--danger)'}">${total} / 100${totalOk ? ' ✓' : ' (100점 강제)'}</div>
       </div>
-      <button class="secondary" onclick="onFormsRevert()">되돌리기</button>
+      <button class="secondary" ${!isEditable ? "disabled" : ""} onclick="onFormsRevert()">되돌리기</button>
       <button ${!isEditable || !totalOk ? "disabled" : ""} onclick="onFormsSave()" title="${!isEditable ? '진행 중인 반기는 편집할 수 없습니다' : (!totalOk ? '총점이 100점이어야 저장할 수 있습니다' : '')}">💾 저장</button>
     </div>
 
-    ${!isEditable ? `<div class="notice warn" style="margin-bottom:12px">⚠ 이 반기(${esc(periodLabel(period))})는 진행 중입니다. 편집을 저장하려면 [반기 관리]에서 먼저 마감하거나 새 반기를 만들어 주세요.</div>` : ""}
+    ${!isEditable ? `<div class="notice warn" style="margin-bottom:12px">🔒 <b>편집 잠금</b> — ${periodObj ? `이 반기(${esc(periodLabel(period))})는 <b>${periodObj.status === "active" ? "진행 중" : (periodObj.status === "upcoming" ? "예정" : "잠금")}</b>이라 편집할 수 없습니다. 편집하려면 [반기 관리]에서 먼저 마감·중단하거나 새 반기를 만들어 주세요.` : "선택된 반기가 없습니다. 위 반기 드롭다운에서 마감·중단된 반기를 선택해 주세요."}</div>` : ""}
 
-    <div style="margin-bottom:8px">
-      <label class="mini">평가표 제목</label>
-      <input type="text" id="forms-title" value="${esc(form.title || "")}" oninput="onFormsFieldChange('title', this.value)"/>
-    </div>
+    <fieldset ${!isEditable ? "disabled" : ""} style="border:0;padding:0;margin:0${!isEditable ? ";opacity:0.55" : ""}">
+      <div style="margin-bottom:8px">
+        <label class="mini">평가표 제목</label>
+        <input type="text" id="forms-title" value="${esc(form.title || "")}" oninput="onFormsFieldChange('title', this.value)"/>
+      </div>
 
-    <div id="forms-areas">
-      ${form.areas.map((area, ai) => renderFormsAreaEditor(area, ai)).join("")}
-    </div>
+      <div id="forms-areas">
+        ${form.areas.map((area, ai) => renderFormsAreaEditor(area, ai)).join("")}
+      </div>
 
-    <button class="secondary" style="width:100%;margin-top:10px" onclick="onFormsAddArea()">+ 새 영역 추가</button>
+      <button class="secondary" style="width:100%;margin-top:10px" onclick="onFormsAddArea()">+ 새 영역 추가</button>
+    </fieldset>
     <div id="forms-msg" class="mini" style="margin-top:10px"></div>
   `;
 }
