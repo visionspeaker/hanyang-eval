@@ -1419,6 +1419,7 @@ function render() {
   if (v === "admin-login") return renderAdminLogin();
   if (v === "admin-home") return renderAdminHome();
   if (v === "adj-admin") return renderAdjustmentAdmin();
+  if (v === "eval-picker") return renderEvalPicker();
   renderHome();
 }
 
@@ -1507,12 +1508,88 @@ function renderHome() {
 // 평가자 로그인 후 이동할 탭을 미리 지정해 두고 로그인 화면으로 이동
 function startEvaluatorFlow(targetTab) {
   session.postLoginTab = targetTab;
-  // 이미 평가자로 로그인된 상태면 재로그인 없이 바로 진행
+  // 이미 평가자로 로그인된 상태면
+  //  - 본인 이름으로 등록된 평가자 계정이 여러 개면 어떤 역할로 진입할지 선택
+  //  - 한 개면 바로 그 역할 화면으로 직행
   if (session.evaluatorDept && session.evaluatorRound) {
+    const roles = findMyEvaluatorAccounts(session.evaluatorName);
+    if (roles.length > 1) return go("eval-picker");
     if (session.evaluatorDept === "인사/안전/교육") return go("adj-admin");
     return go("eval-home");
   }
   go("eval-login");
+}
+
+// 로그인된 평가자 이름 (예: "강유석 부장")으로 등록된 모든 평가자 계정 조회
+//  → 같은 사람이 여러 역할을 겸임하는 경우 (강유석 = 경영지원부/1차 + 인사/안전/교육/담당)
+function findMyEvaluatorAccounts(evaluatorName) {
+  const raw = String(evaluatorName || "").split(" ")[0].trim();
+  if (!raw) return [];
+  const evs = getEvaluators();
+  const out = [];
+  Object.entries(evs).forEach(([dept, rounds]) => {
+    Object.entries(rounds).forEach(([round, info]) => {
+      if (info && info.name === raw) out.push({ dept, round, info });
+    });
+  });
+  return out;
+}
+
+// 카드에서 특정 역할로 전환 (재로그인 없이 세션 정보만 갱신)
+function switchEvalRole(dept, round) {
+  const evs = getEvaluators();
+  const info = evs[dept] && evs[dept][round];
+  if (!info) return;
+  session.evaluatorDept = dept;
+  session.evaluatorRound = round;
+  session.evaluatorName = `${info.name} ${info.title}`;
+  // 임원 4차(대표이사)는 관리자 권한도 유지
+  if (dept === "임원" && round === "4차") session.isAdmin = true;
+  saveSession();
+  if (dept === "인사/안전/교육") return go("adj-admin");
+  return go("eval-home");
+}
+
+// 로그인된 사람이 여러 역할을 겸임할 때 표시할 진입 선택 화면
+function renderEvalPicker() {
+  const roles = findMyEvaluatorAccounts(session.evaluatorName);
+  if (!roles.length) return go("eval-login");
+  if (roles.length === 1) {
+    // 단일 계정이면 곧바로 해당 화면으로
+    const r = roles[0];
+    return switchEvalRole(r.dept, r.round);
+  }
+  const cards = roles.map(r => {
+    const isAdj = r.dept === "인사/안전/교육";
+    const label = isAdj
+      ? "근태·안전·교육 가감점 관리"
+      : `${r.dept} ${r.round} 평가`;
+    const desc = isAdj
+      ? "전 직원 대상 카테고리별 가감점(±3점) 부여"
+      : `해당 부서 소속 직원 대상 ${r.round} 평가 진행`;
+    const isCurrent = (session.evaluatorDept === r.dept && session.evaluatorRound === r.round);
+    return `
+      <div class="choice-card c-eval" role="button" tabindex="0"
+           onclick="switchEvalRole('${esc(r.dept)}','${esc(r.round)}')"
+           onkeydown="if(event.key==='Enter')switchEvalRole('${esc(r.dept)}','${esc(r.round)}')"
+           style="cursor:pointer">
+        <h3 style="margin:0 0 4px">${esc(label)}${isCurrent ? ' <span class="mini" style="color:var(--success)">· 현재</span>' : ''}</h3>
+        <p style="margin:0;color:var(--muted)">${esc(desc)}</p>
+      </div>
+    `;
+  }).join("");
+  $app().innerHTML = `
+    <div class="card" style="max-width:640px;margin:40px auto">
+      <h2>어떤 평가로 진입할까요?</h2>
+      <div class="notice info">로그인된 계정(${esc(session.evaluatorName || "")})으로 접근 가능한 역할이 여러 개입니다. 진행할 작업을 선택해 주세요.</div>
+      <div class="choice-grid" style="display:grid;gap:12px;grid-template-columns:1fr;margin-top:14px">
+        ${cards}
+      </div>
+      <div style="margin-top:14px;text-align:right">
+        <button class="secondary" onclick="logoutEvaluator()">다른 계정으로 로그인</button>
+      </div>
+    </div>
+  `;
 }
 
 // 관리자 카드 클릭 시: 이미 관리자로 로그인된 상태면 대시보드로, 아니면 로그인 화면으로
@@ -4280,6 +4357,7 @@ function deptAverage(results) {
 window.go = go;
 window.enterAdmin = enterAdmin;
 window.startEvaluatorFlow = startEvaluatorFlow;
+window.switchEvalRole = switchEvalRole;
 window.tryEvalLogin = tryEvalLogin;
 window.logoutEvaluator = logoutEvaluator;
 window.setEvalTab = setEvalTab;
