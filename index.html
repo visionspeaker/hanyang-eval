@@ -1060,19 +1060,9 @@ function getEvaluations() {
 }
 function getEvaluation(dept, empName, round, period) {
   const p = period || getActivePeriod() || resolveEvalPeriod();
-  const list = getEvaluations();
-  // 1) 지정 반기 정확 매칭
-  const exact = list.find(x =>
+  return getEvaluations().find(x =>
     x.dept === dept && x.empName === empName && x.round === round && (x.period || "2026-H1") === p
   );
-  if (exact) return exact;
-  // 2) fallback: 활성 반기가 없어 백엔드가 legacy H1 로 저장했거나, period 가 어긋난 케이스 복구.
-  //    같은 (dept, empName, round) 중 가장 최근 submittedAt 레코드 반환.
-  const matches = list.filter(x => x.dept === dept && x.empName === empName && x.round === round);
-  if (!matches.length) return undefined;
-  return matches.slice().sort((a, b) =>
-    new Date(b.submittedAt || 0) - new Date(a.submittedAt || 0)
-  )[0];
 }
 // 특정 반기의 평가만 반환 (없으면 활성/최근 반기)
 function getEvaluationsByPeriod(period) {
