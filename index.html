@@ -1760,7 +1760,8 @@ function renderEvalHome() {
   }
   const doneMap = {};
   targets.forEach(t => {
-    const ev = evals.find(x => x.dept===t.dept && x.empName===t.name && x.round===round);
+    // getEvaluation 이 반기 매칭 실패 시 fallback 으로 최근 레코드까지 탐색 → 정합성 없는 저장(legacy H1)도 인식
+    const ev = getEvaluation(t.dept, t.name, round, activePeriod);
     doneMap[t.name] = !!ev;
   });
   const initialTab = session.postLoginTab === "view" ? "view" : "list";
@@ -1822,10 +1823,10 @@ function setEvalTab(which) {
       targets = EMPLOYEES.filter(e => e.dept === dept && !isExecEmp(e))
         .filter(e => !(e.name === getCurrentEvaluatorName(dept, round)));
     }
-    const evals = getEvaluationsByPeriod(getActivePeriod());
+    const activePeriod = getActivePeriod() || resolveEvalPeriod();
     const doneMap = {};
     targets.forEach(t => {
-      doneMap[t.name] = !!evals.find(x => x.dept===t.dept && x.empName===t.name && x.round===round);
+      doneMap[t.name] = !!getEvaluation(t.dept, t.name, round, activePeriod);
     });
     renderEvalListTab(targets, doneMap);
   } else {
