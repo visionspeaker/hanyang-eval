@@ -1059,14 +1059,24 @@ function getEvaluations() {
   return _cache.evaluations || [];
 }
 function getEvaluation(dept, empName, round, period) {
-  const p = period || getActivePeriod();
-  return getEvaluations().find(x =>
+  const p = period || getActivePeriod() || resolveEvalPeriod();
+  const list = getEvaluations();
+  // 1) 지정 반기 정확 매칭
+  const exact = list.find(x =>
     x.dept === dept && x.empName === empName && x.round === round && (x.period || "2026-H1") === p
   );
+  if (exact) return exact;
+  // 2) fallback: 활성 반기가 없어 백엔드가 legacy H1 로 저장했거나, period 가 어긋난 케이스 복구.
+  //    같은 (dept, empName, round) 중 가장 최근 submittedAt 레코드 반환.
+  const matches = list.filter(x => x.dept === dept && x.empName === empName && x.round === round);
+  if (!matches.length) return undefined;
+  return matches.slice().sort((a, b) =>
+    new Date(b.submittedAt || 0) - new Date(a.submittedAt || 0)
+  )[0];
 }
-// 특정 반기의 평가만 반환 (없으면 활성 반기)
+// 특정 반기의 평가만 반환 (없으면 활성/최근 반기)
 function getEvaluationsByPeriod(period) {
-  const p = period || getActivePeriod();
+  const p = period || getActivePeriod() || resolveEvalPeriod();
   return getEvaluations().filter(x => (x.period || "2026-H1") === p);
 }
 
@@ -1734,7 +1744,7 @@ function renderEvalHome() {
   if (!session.evaluatorDept) return go("eval-login");
   const dept = session.evaluatorDept;
   const round = session.evaluatorRound;
-  const activePeriod = getActivePeriod();
+  const activePeriod = getActivePeriod() || resolveEvalPeriod();
   const evals = getEvaluationsByPeriod(activePeriod);
   let targets;
   if (dept === "임원") {
@@ -1869,7 +1879,7 @@ function renderEvalForm() {
   const empDept = session.selectedEmpDept || session.evaluatorDept;
   const emp = EMPLOYEES.find(e => e.dept === empDept && e.name === empName);
   if (!emp) return go("eval-home");
-  const activePeriod = getActivePeriod();
+  const activePeriod = getActivePeriod() || resolveEvalPeriod();
   const form = getFormForEmp(activePeriod, emp);
   const existing = getEvaluation(empDept, empName, round, activePeriod);
   const totalMax = formTotalPoints(form);
@@ -2066,7 +2076,7 @@ async function submitEval() {
   const empName = session.selectedEmp;
   const empDept = session.selectedEmpDept || session.evaluatorDept;
   const emp = EMPLOYEES.find(e => e.dept === empDept && e.name === empName);
-  const activePeriod = getActivePeriod();
+  const activePeriod = getActivePeriod() || resolveEvalPeriod();
   const form = getFormForEmp(activePeriod, emp);
   // 안전장치: 활성 반기가 어떤 이유로든 마감 상태라면 제출 차단
   if (isPeriodClosed(activePeriod) && !session.isAdmin) {
@@ -4072,7 +4082,7 @@ function processUploadRows(rows) {
 
 async function confirmUploadApply() {
   if (!_uploadPending || !_uploadPending.length) return;
-  const activePeriod = getActivePeriod();
+  const activePeriod = getActivePeriod() || resolveEvalPeriod();
   if (isPeriodClosed(activePeriod)) {
     alert("현재 반기가 마감된 상태입니다. 반기 관리에서 활성 반기를 다시 지정한 뒤 업로드해 주세요.");
     return;
