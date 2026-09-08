@@ -1888,23 +1888,31 @@ function renderEvalForm() {
     </div>
     <div class="card">
       ${existing ? `<div class="notice info">이미 <b>${esc(periodLabel(activePeriod))}</b>에 저장된 평가가 있습니다. 수정 후 다시 제출하면 갱신됩니다.</div>` : ""}
+      <div class="notice" style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:12px;padding:10px 12px;background:#f5f7fb;border:1px solid #dbe4f2;border-radius:8px;font-size:12px;color:#333">
+        <span><b>A</b> 매우우수 · 100%</span>
+        <span><b>B</b> 우수 · 90%</span>
+        <span><b>C</b> 보통 · 80%</span>
+        <span><b>D</b> 미흡 · 70%</span>
+        <span><b>E</b> 매우미흡 · 60%</span>
+        <span style="color:var(--muted)">등급 클릭 → 항목·문항 점수 자동 반영</span>
+      </div>
       <div id="form-err"></div>
       <form id="eval-form" onsubmit="event.preventDefault();submitEval();">
         <table class="eval-table">
           <thead>
             <tr>
-              <th style="width:90px">평가영역</th>
-              <th style="width:180px">평가 항목</th>
+              <th style="width:80px">평가영역</th>
+              <th style="width:160px">평가 항목</th>
               <th>세부 문항</th>
-              ${(form.grades || GRADE_LABELS).map(g => `<th style="width:70px">${g}</th>`).join("")}
-              <th style="width:70px">점수</th>
+              <th style="width:280px;text-align:center">등급 (A → E)</th>
+              <th style="width:70px;text-align:right">점수</th>
             </tr>
           </thead>
           <tbody>
             ${renderFormItems(form, existing)}
             <tr class="total-row">
-              <td colspan="${3 + (form.grades || GRADE_LABELS).length}">총점 (${totalMax}점 만점)</td>
-              <td id="total-score" style="text-align:center">0</td>
+              <td colspan="4">총점 (${totalMax}점 만점)</td>
+              <td id="total-score" style="text-align:right;font-weight:700">0</td>
             </tr>
           </tbody>
         </table>
@@ -1929,9 +1937,24 @@ function subItemGradeValue(maxPoints, gradeIndex) {
   return Math.round(raw * 10) / 10; // 소수 첫째 자리 반올림
 }
 
+// 등급 A~E 버튼(pill)을 한 셀에 그려주는 헬퍼
+//   values: 5개 등급별 실제 점수 배열 (A=values[0], E=values[4])
+//   sel:   현재 선택된 점수(없으면 null)
+//   dataAttrs: 각 pill 에 부여할 공통 data-* 문자열
+//   perValueAttrs: 등급 index 별 개별 data-* (선택)
+function renderGradePills(values, sel, dataAttrs, perValueAttrs) {
+  const letters = ["A","B","C","D","E"];
+  return values.map((sc, gi) => {
+    const checked = sel !== null && sel !== undefined && Math.abs(sel - sc) < 0.05;
+    const extraAttr = perValueAttrs ? perValueAttrs(gi, sc) : "";
+    const bg = checked ? "background:var(--primary);color:#fff;border-color:var(--primary)" : "background:#fff;color:#374151";
+    return `<label class="score-cell ${checked ? 'checked' : ''}" ${dataAttrs} data-score="${sc}" ${extraAttr}
+             style="flex:1;text-align:center;padding:8px 4px;border:1px solid #d1d5db;border-radius:8px;font-weight:700;cursor:pointer;font-size:15px;user-select:none;${bg}">${letters[gi]}</label>`;
+  }).join("");
+}
+
 function renderFormItems(form, existing) {
   const rows = [];
-  const grades = form.grades || GRADE_LABELS;
   form.areas.forEach(area => {
     // 영역 rowspan 계산: 항목의 sub-item 수 합
     let areaRows = 0;
@@ -1947,24 +1970,16 @@ function renderFormItems(form, existing) {
         item.subItems.forEach((sub, subIdx) => {
           const key = `${item.id}#${subIdx}`;
           const sel = existing && existing.scores ? existing.scores[key] : null;
-          const cells = grades.map((_g, gi) => {
-            const val = subItemGradeValue(sub.points, gi);
-            const checked = sel !== null && sel !== undefined && Math.abs(sel - val) < 0.05;
-            return `
-              <td style="text-align:center;padding:4px">
-                <label class="score-cell ${checked ? 'checked' : ''}" data-item="${item.id}" data-sub="${subIdx}" data-key="${key}" data-score="${val}" data-max="${sub.points}"
-                       style="display:block;cursor:pointer;padding:6px 2px;border-radius:6px;font-size:12px;font-weight:700;${checked ? 'background:var(--primary);color:#fff' : ''}">
-                  <div style="font-size:13px">${val}</div>
-                </label>
-              </td>`;
-          }).join("");
+          const values = [0,1,2,3,4].map(gi => subItemGradeValue(sub.points, gi));
+          const pills = renderGradePills(values, sel,
+            `data-item="${item.id}" data-sub="${subIdx}" data-key="${key}" data-max="${sub.points}"`);
           rows.push(`
             <tr>
               ${!areaRendered ? `<td class="area" rowspan="${areaRows}">${esc(area.area)}</td>` : ""}
               ${subIdx === 0 ? `<td class="item" rowspan="${subItemRows}" style="vertical-align:middle"><div><b>${esc(item.name)}</b></div><div class="mini">${maxPts}점 · <span id="itemsum-${item.id}">-</span>/${maxPts}</div></td>` : ""}
               <td class="desc"><b>${esc(sub.name)}</b> <span class="mini">(${sub.points}점)</span></td>
-              ${cells}
-              <td class="subtotal-cell" id="score-${key}" data-item="${item.id}">${sel ?? "-"}</td>
+              <td style="padding:6px 8px"><div style="display:flex;gap:6px">${pills}</div></td>
+              <td class="subtotal-cell" id="score-${key}" data-item="${item.id}" style="text-align:right;font-weight:600">${sel ?? "-"}</td>
             </tr>`);
           areaRendered = true;
         });
@@ -1972,23 +1987,15 @@ function renderFormItems(form, existing) {
         // 하위 문항이 없는 기존 방식 (항목 단위 채점)
         const scores = item.scores || [maxPts, Math.round(maxPts*0.9*10)/10, Math.round(maxPts*0.8*10)/10, Math.round(maxPts*0.7*10)/10, Math.round(maxPts*0.6*10)/10];
         const sel = existing && existing.scores ? existing.scores[item.id] : null;
-        const cells = scores.map(sc => {
-          const checked = sel === sc;
-          return `
-            <td style="text-align:center;padding:4px">
-              <label class="score-cell ${checked ? 'checked' : ''}" data-item="${item.id}" data-key="${item.id}" data-score="${sc}"
-                     style="display:block;cursor:pointer;padding:8px 2px;border-radius:6px;font-size:12px;font-weight:700;${checked ? 'background:var(--primary);color:#fff' : ''}">
-                <div style="font-size:14px">${sc}</div>
-              </label>
-            </td>`;
-        }).join("");
+        const pills = renderGradePills(scores, sel,
+          `data-item="${item.id}" data-key="${item.id}"`);
         rows.push(`
           <tr>
             ${!areaRendered ? `<td class="area" rowspan="${areaRows}">${esc(area.area)}</td>` : ""}
             <td class="item"><div><b>${esc(item.name)}</b></div><div class="mini">${maxPts}점</div></td>
             <td class="desc">${esc(item.desc || "")}</td>
-            ${cells}
-            <td class="subtotal-cell" id="score-${item.id}" data-item="${item.id}">${sel ?? "-"}</td>
+            <td style="padding:6px 8px"><div style="display:flex;gap:6px">${pills}</div></td>
+            <td class="subtotal-cell" id="score-${item.id}" data-item="${item.id}" style="text-align:right;font-weight:600">${sel ?? "-"}</td>
           </tr>`);
         areaRendered = true;
       }
@@ -2003,15 +2010,17 @@ function attachFormHandlers(form) {
       const key = el.dataset.key;
       const item = el.dataset.item;
       const score = parseFloat(el.dataset.score);
-      // 같은 셀 그룹(같은 key) 하이라이트 해제
+      // 같은 셀 그룹(같은 key) 하이라이트 해제 (unchecked 기본색으로 복원)
       document.querySelectorAll(`.score-cell[data-key="${key}"]`).forEach(c => {
         c.classList.remove("checked");
-        c.style.background = "";
-        c.style.color = "";
+        c.style.background = "#fff";
+        c.style.color = "#374151";
+        c.style.borderColor = "#d1d5db";
       });
       el.classList.add("checked");
       el.style.background = "var(--primary)";
       el.style.color = "#fff";
+      el.style.borderColor = "var(--primary)";
       const cell = document.getElementById(`score-${key}`);
       if (cell) cell.textContent = Number.isInteger(score) ? score : score.toFixed(1);
       // 항목 소계 업데이트
