@@ -777,6 +777,12 @@ function getFormForGroup(period, groupKey) {
   const schemas = _cache.formSchemas || [];
   const hit = schemas.find(s => s.period === period && s.groupKey === groupKey);
   if (hit && hit.form) return hit.form;
+  // 매칭되는 스냅샷이 없으면 같은 그룹의 가장 최근 반기 스냅샷 사용 (활성 반기가 없거나 신규 반기에서 유용)
+  const groupSchemas = schemas
+    .filter(s => s.groupKey === groupKey && s.form)
+    .slice()
+    .sort((a, b) => periodSortKey(b.period) - periodSortKey(a.period));
+  if (groupSchemas[0]) return groupSchemas[0].form;
   return DEFAULT_FORMS[groupKey] || FORM_STAFF;
 }
 function getFormForEmp(period, emp) { return getFormForGroup(period, groupKeyForEmp(emp)); }
@@ -907,6 +913,13 @@ function getSettings() {
   return _cache.settings;
 }
 function getActivePeriod() { return getSettings().activePeriod; }
+// 평가 제출/조회에 사용할 유효 반기 (활성 반기가 없으면 가장 최근 반기로 fallback)
+function resolveEvalPeriod() {
+  const s = getSettings();
+  if (s.activePeriod) return s.activePeriod;
+  const list = s.periods || [];
+  return (list[0] && list[0].id) || null;
+}
 function isPeriodClosed(id) {
   const p = getSettings().periods.find(x => x.id === id);
   return !!(p && p.status === "closed");
