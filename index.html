@@ -1367,6 +1367,14 @@ function clearSession() {
 const $app = () => document.getElementById("app");
 const $topActions = () => document.getElementById("top-actions");
 
+// 점수 표시용 포매터: 부동소수 오차 제거(소수 첫째 자리 반올림), 정수면 그대로
+function fmtScore(n) {
+  if (n === null || n === undefined || n === "") return "-";
+  const num = Number(n);
+  if (isNaN(num)) return "-";
+  const r = Math.round(num * 10) / 10;
+  return Number.isInteger(r) ? String(r) : r.toFixed(1);
+}
 function esc(s) {
   if (s === undefined || s === null) return "";
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -2226,8 +2234,8 @@ function renderDeptResultsInline(dept, container) {
     if (showRank) tds.push(`<td>${r.rankIndex}</td>`);
     tds.push(`<td><b>${esc(r.empName)}</b></td>`);
     tds.push(`<td>${esc(r.empRank)}</td>`);
-    tds.push(`<td style="text-align:center">${r.score1 ?? "-"}</td>`);
-    if (showSec)   tds.push(`<td style="text-align:center">${r.score2 ?? "-"}</td>`);
+    tds.push(`<td style="text-align:center">${fmtScore(r.score1)}</td>`);
+    if (showSec)   tds.push(`<td style="text-align:center">${fmtScore(r.score2)}</td>`);
     if (showAvg)   tds.push(`<td style="text-align:center">${r.avg !== null ? r.avg.toFixed(1) : "-"}</td>`);
     if (showAdj) {
       const adj = r.adjustment || 0;
@@ -3560,8 +3568,8 @@ function renderDeptResultTable(dept, results) {
       <td><b>${esc(r.empName)}</b></td>
       <td>${esc(r.empRank)}</td>
       <td>${esc(r.rankCategory)}</td>
-      <td style="text-align:center">${r.score1 ?? "-"}</td>
-      <td style="text-align:center">${r.score2 ?? "-"}</td>
+      <td style="text-align:center">${fmtScore(r.score1)}</td>
+      <td style="text-align:center">${fmtScore(r.score2)}</td>
       <td style="text-align:center"><b>${r.avg !== null ? r.avg.toFixed(1) : "-"}</b></td>
       <td style="text-align:center">${r.grade ? `<span class="chip ${r.grade.toLowerCase()}">${r.grade}</span>` : "-"}</td>
     </tr>
@@ -3881,7 +3889,7 @@ function exportEvaluationsXlsx() {
       const e2 = all.find(x => x.dept===d && x.empName===r.empName && x.round==="2차");
       rows.push([
         d, r.empName, r.empRank, r.rankCategory,
-        r.score1 ?? "", r.score2 ?? "",
+        r.score1 !== null ? Number(fmtScore(r.score1)) : "", r.score2 !== null ? Number(fmtScore(r.score2)) : "",
         e1 ? e1.evaluatorName : "", e2 ? e2.evaluatorName : "",
         e1 ? (e1.comment || "") : "", e2 ? (e2.comment || "") : "",
         r.avg !== null ? Number(r.avg.toFixed(2)) : "",
@@ -4139,7 +4147,7 @@ function exportEvaluationsCsv() {
   depts.forEach(d => {
     computeDeptResults(d, period).forEach(r => {
       rows.push([periodLabel(period), d, r.empName, r.empRank, r.rankCategory,
-        r.score1 ?? "", r.score2 ?? "", "", "",
+        r.score1 !== null ? Number(fmtScore(r.score1)) : "", r.score2 !== null ? Number(fmtScore(r.score2)) : "", "", "",
         r.avg !== null ? r.avg.toFixed(2) : "",
         r.grade ?? "", r.rankIndex]);
     });
@@ -4169,7 +4177,7 @@ function exportEvaluationsDetailCsv() {
   const rows = [["반기","부서","이름","직급","평가표","차수","평가자","총점","제출시각","항목ID","항목점수"]];
   all.forEach(ev => {
     Object.entries(ev.scores).forEach(([k, v]) => {
-      rows.push([ev.period || "2026-H1", ev.dept, ev.empName, ev.empRank, ev.rankCategory, ev.round, ev.evaluatorName, ev.total, ev.submittedAt, k, v]);
+      rows.push([ev.period || "2026-H1", ev.dept, ev.empName, ev.empRank, ev.rankCategory, ev.round, ev.evaluatorName, ev.total !== null && ev.total !== undefined ? Number(fmtScore(ev.total)) : "", ev.submittedAt, k, v]);
     });
   });
   const csv = "\uFEFF" + rows.map(r => r.map(v => `"${String(v).replaceAll('"','""')}"`).join(",")).join("\n");
