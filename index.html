@@ -3118,7 +3118,7 @@ function renderAdminEmployees(body) {
     const isExec = e.rank === "부장" || e.rank === "이사";
     const inactive = e.active === false;
     return `
-      <tr${inactive ? ' style="opacity:0.5;text-decoration:line-through"' : ''}>
+      <tr data-emp="1" data-name="${esc(e.name)}" data-dept="${esc(e.dept)}" data-inactive="${inactive ? '1' : '0'}"${inactive ? ' style="opacity:0.5;text-decoration:line-through"' : ''}>
         <td>${esc(e.dept)}</td>
         <td><b>${esc(e.name)}</b>${isExec ? ' <span class="chip" style="background:#fef3c7;color:#92400e;padding:1px 6px;font-size:10px">임원평가</span>' : ''}</td>
         <td>${esc(e.rank)}</td>
@@ -3153,7 +3153,7 @@ function renderAdminEmployees(body) {
         <input type="checkbox" ${hideInactive ? 'checked' : ''} onchange="onEmpHideInactive(this.checked)" style="width:auto"/>
         퇴사자 숨김
       </label>
-      <span class="mini" style="margin-left:auto">재직 ${activeCount}명 · 퇴사 ${inactiveCount}명 · 표시 ${filtered.length}명</span>
+      <span class="mini" style="margin-left:auto">재직 ${activeCount}명 · 퇴사 ${inactiveCount}명 · 표시 <span id="emp-shown-count">${filtered.length}</span>명</span>
     </div>
     ${editForm}
     <div style="overflow-x:auto">
@@ -3172,9 +3172,33 @@ function renderAdminEmployees(body) {
   `;
 }
 
-function onEmpSearchChange(v)    { session.__empFilterSearch = v; renderAdminEmployees(document.getElementById("admin-body")); }
+// 검색은 재렌더링 대신 DOM 필터로 처리해 한글 IME 조합 상태를 유지
+function onEmpSearchChange(v) {
+  session.__empFilterSearch = v;
+  applyEmpFilters();
+}
 function onEmpDeptChange(v)      { session.__empFilterDept = v;   renderAdminEmployees(document.getElementById("admin-body")); }
 function onEmpHideInactive(v)    { session.__empHideInactive = v; renderAdminEmployees(document.getElementById("admin-body")); }
+function applyEmpFilters() {
+  const q = String(session.__empFilterSearch || "").trim();
+  const dept = session.__empFilterDept || "";
+  const hideInactive = session.__empHideInactive !== false;
+  const rows = document.querySelectorAll("#admin-body tr[data-emp='1']");
+  let shown = 0;
+  rows.forEach(tr => {
+    const name = tr.getAttribute("data-name") || "";
+    const rDept = tr.getAttribute("data-dept") || "";
+    const inactive = tr.getAttribute("data-inactive") === "1";
+    let visible = true;
+    if (hideInactive && inactive) visible = false;
+    if (dept && rDept !== dept) visible = false;
+    if (q && !name.includes(q)) visible = false;
+    tr.style.display = visible ? "" : "none";
+    if (visible) shown++;
+  });
+  const cnt = document.getElementById("emp-shown-count");
+  if (cnt) cnt.textContent = shown;
+}
 
 function empAdd() {
   session.__empEditing = { mode: 'add', dept: '', name: '', rank: '사원' };
