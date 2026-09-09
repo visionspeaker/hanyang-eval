@@ -742,28 +742,72 @@ const FORM_MANAGER = {
   grades: ["매우우수","우수","보통","미흡","매우미흡"]
 };
 
-// 등급 백분율 (매우우수 100% ~ 매우미흡 60%)
+// 등급 백분율 (기본: 매우우수 100% ~ 매우미흡 60%)
+// 폼 스키마에 gradeRatios 가 있으면 폼별로 override 가능
 const GRADE_RATIOS = [1.0, 0.9, 0.8, 0.7, 0.6];
 const GRADE_LABELS = ["매우우수","우수","보통","미흡","매우미흡"];
 
+// 대리 이하 (2026-H2~ 노무사 검토안 반영, 하위 문항별 A~E 평정, 환산율 100/80/60/40/20)
 const FORM_STAFF = {
-  title: "업무수행평가 (대리 이하)",
+  title: "업무수행평가 (대리·주임·반장·사원)",
+  gradeRatios: [1.0, 0.8, 0.6, 0.4, 0.2],
   areas: [
-    { area: "직무능력", items: [
-      { id: "s1", name: "업무 능력", desc: "문서 작성 능력은 어떠한가?\n업무 처리속도는 어떠한가?\n부여된 업무를 정확히 수행하는가?", scores: [10,9,8,7,6] },
-      { id: "s2", name: "지시사항 이행", desc: "상사나 관리자의 지시를 잘 따르고 준수하는가?\n업무의 기한을 준수하는가?", scores: [10,9,8,7,6] },
-      { id: "s3", name: "창의성", desc: "업무를 효율적으로 하는가?\n업무를 창의적으로 개선하는가?", scores: [10,9,8,7,6] },
-      { id: "s4", name: "업무지식", desc: "업무 관련 지식을 숙지하고 있는가?\n직위에 맞는 업무 숙련도가 있는가?\n업무 관련 자격증(교육 이수)을 소지하고 있는가?", scores: [10,9,8,7,6] }
+    { area: "성과 영역(35점)", items: [
+      { id: "s1", name: "업무 목표 달성도", subItems: [
+        { name: "해당 반기에 부여된 개인 업무 목표를 달성하였는가?", points: 5 },
+        { name: "업무의 양은 직위에 맞게 수행하는가?", points: 5 }
+      ]},
+      { id: "s2", name: "업무 처리 정확성", subItems: [
+        { name: "부여된 업무를 정확히 수행하는가? (오류 발생 빈도)", points: 4 },
+        { name: "업무 결과물의 완성도는 직위에 맞는 수준인가?", points: 3 },
+        { name: "문서 작성 능력은 어떠한가?", points: 3 }
+      ]},
+      { id: "s3", name: "업무 납기 준수", subItems: [
+        { name: "주어진 업무를 기한 내에 완료하는가?", points: 4 },
+        { name: "업무 처리속도는 어떠한가?", points: 3 }
+      ]},
+      { id: "s4", name: "자기 주도 업무 개선", subItems: [
+        { name: "지시 없이도 업무 개선점을 발견하여 제안·실행하는가?", points: 4 },
+        { name: "업무를 효율적인 방식으로 처리하는가?", points: 4 }
+      ]}
     ]},
-    { area: "업무역량 및 성과", items: [
-      { id: "s5", name: "협조성·적극성", desc: "업무 수행을 적극적으로 하는가?\n담당 업무 외 부서 업무에 협조적인가?", scores: [10,9,8,7,6] },
-      { id: "s6", name: "애사심·조직기여도", desc: "부서 발전에 기여하는가?\n비용 절감(절약)을 위해 노력하는가?\n장기근속을 희망하는가?", scores: [10,9,8,7,6] },
-      { id: "s7", name: "성실성·책임성", desc: "맡겨진 업무를 성실하게 하는가?\n근무를 태만히 하지 않는가?", scores: [10,9,8,7,6] },
-      { id: "s8", name: "업무성과", desc: "업무 결과 수준은 직위에 맞게 수행하는가?\n업무의 양은 직위에 맞게 수행하는가?", scores: [10,9,8,7,6] }
+    { area: "역량 영역(35점)", items: [
+      { id: "s5", name: "직무 전문성", subItems: [
+        { name: "업무 관련 지식을 숙지하고 있는가?", points: 5 },
+        { name: "직위에 맞는 업무 숙련도가 있는가?", points: 5 }
+      ]},
+      { id: "s6", name: "학습 의욕 및 자기계발", subItems: [
+        { name: "직무 관련 교육 참여·자격 취득에 노력하는가?", points: 5 },
+        { name: "새로운 업무·기술을 습득하려는 의지가 있는가?", points: 4 }
+      ]},
+      { id: "s7", name: "문제 파악 및 보고", subItems: [
+        { name: "업무 진행 중 문제 상황을 조기에 인식하는가?", points: 4 },
+        { name: "상위자에게 정확하고 신속하게 보고하는가?", points: 4 }
+      ]},
+      { id: "s8", name: "디지털·업무도구 활용", subItems: [
+        { name: "업무에 필요한 소프트웨어·시스템 활용에 능숙한가?", points: 4 },
+        { name: "업무에 AI를 활용하는가?", points: 4 }
+      ]}
     ]},
-    { area: "생활/안전", items: [
-      { id: "s9", name: "규정·예절", desc: "근태(무단결근, 지각, 조퇴), 복장은 어떠한가?\n회사 규정을 준수하는가?\n직장 예절을 준수하는가?", scores: [10,9,8,7,6] },
-      { id: "s10", name: "건강·안전", desc: "건강 및 위생 관리 상태는 어떠한가?\n업무 환경 정리 정돈은 잘 하는가?\n안전에 유의하고 사고 예방을 위해 노력하는가?", scores: [10,9,8,7,6] }
+    { area: "행동·태도 영역(30점)", items: [
+      { id: "s9", name: "협업 및 팀워크", subItems: [
+        { name: "담당 업무 외 타 부서 업무에 협조적인가?", points: 4 },
+        { name: "팀 내 업무 분담에 협력하고 동료에게 도움을 제공하는가?", points: 4 }
+      ]},
+      { id: "s10", name: "소통 및 보고 자세", subItems: [
+        { name: "상사·관리자의 지시를 정확히 이해하고 이행하는가?", points: 4 },
+        { name: "의사 표현이 명확하고 상대의 말을 경청하는가?", points: 3 }
+      ]},
+      { id: "s11", name: "책임감 및 근무 태도", subItems: [
+        { name: "맡겨진 업무를 성실하게 수행하고 근무를 태만히 하지 않는가?", points: 3 },
+        { name: "근태(무단결근·지각·조퇴), 복장은 어떠한가?", points: 2 },
+        { name: "회사 규정 및 직장 예절을 준수하는가?", points: 3 }
+      ]},
+      { id: "s12", name: "건강·안전 관리", subItems: [
+        { name: "건강 및 위생 관리 상태는 어떠한가?", points: 3 },
+        { name: "업무 환경 정리 정돈은 잘 하는가?", points: 2 },
+        { name: "안전에 유의하고 사고 예방을 위해 노력하는가?", points: 2 }
+      ]}
     ]}
   ],
   grades: ["매우우수","우수","보통","미흡","매우미흡"]
@@ -1945,9 +1989,11 @@ function renderEvalForm() {
   recalcTotal();
 }
 
-// 하위 문항의 등급별 점수 계산 (매우우수 100% → 매우미흡 60%)
-function subItemGradeValue(maxPoints, gradeIndex) {
-  const raw = (Number(maxPoints) || 0) * GRADE_RATIOS[gradeIndex];
+// 하위 문항의 등급별 점수 계산
+// ratios: 폼별 gradeRatios 오버라이드 (없으면 전역 GRADE_RATIOS 사용)
+function subItemGradeValue(maxPoints, gradeIndex, ratios) {
+  const rs = (Array.isArray(ratios) && ratios.length === 5) ? ratios : GRADE_RATIOS;
+  const raw = (Number(maxPoints) || 0) * rs[gradeIndex];
   return Math.round(raw * 10) / 10; // 소수 첫째 자리 반올림
 }
 
@@ -1984,7 +2030,7 @@ function renderFormItems(form, existing) {
         item.subItems.forEach((sub, subIdx) => {
           const key = `${item.id}#${subIdx}`;
           const sel = existing && existing.scores ? existing.scores[key] : null;
-          const values = [0,1,2,3,4].map(gi => subItemGradeValue(sub.points, gi));
+          const values = [0,1,2,3,4].map(gi => subItemGradeValue(sub.points, gi, form.gradeRatios));
           const pills = renderGradePills(values, sel,
             `data-item="${item.id}" data-sub="${subIdx}" data-key="${key}" data-max="${sub.points}"`);
           rows.push(`
