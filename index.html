@@ -626,7 +626,11 @@ const EXEC_TARGETS = {
 // 3차/4차 평가 대상 집합 (부서|이름 키)
 const EXEC_KEY = e => `${e.dept}|${e.name}`;
 const EXEC_SET = new Set();
-function isExecEmp(emp) { return EXEC_SET.has(EXEC_KEY(emp)); }
+// 부서 1차/2차 평가에서 제외되는 직급
+//  · 부장·이사: 3차/4차 임원 평가로 이동
+//  · 상무 이상(상무·전무·부사장·대표이사·회장): 현재 평가 대상 아님 (필요 시 임원 평가에 별도 추가)
+const SENIOR_RANK_SET = new Set(["부장","이사","상무","전무","부사장","대표이사","회장"]);
+function isExecEmp(emp) { return !!(emp && SENIOR_RANK_SET.has(emp.rank)); }
 function isExecRound(round) {
   return round === "4차" || (typeof round === "string" && round.startsWith("3차"));
 }
@@ -4117,7 +4121,7 @@ function processUploadRows(rows) {
       return;
     }
     if (isExecEmp(emp)) {
-      errors.push({ row: idx + 2, dept, name, reason: "부장·이사는 일반 1차/2차 업로드 대상이 아닙니다. 임원 평가(부사장·대표이사)는 웹 화면에서만 제출됩니다." });
+      errors.push({ row: idx + 2, dept, name, reason: "부장·이사(및 상무 이상)는 일반 1차/2차 업로드 대상이 아닙니다. 임원 평가(부사장·대표이사)는 웹 화면에서만 제출됩니다." });
       return;
     }
     if (s1 === null && s2 === null) {
