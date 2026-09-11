@@ -1535,6 +1535,7 @@ function render() {
   if (v === "admin-home") return renderAdminHome();
   if (v === "adj-admin") return renderAdjustmentAdmin();
   if (v === "eval-picker") return renderEvalPicker();
+  if (v === "eval-changepw") return renderEvalChangePw();
   renderHome();
 }
 
@@ -1831,6 +1832,75 @@ function logoutEvaluator() {
   go("home");
 }
 
+/* --- 평가자 본인 비밀번호 변경 --- */
+function renderEvalChangePw() {
+  if (!session.evaluatorDept || !session.evaluatorRound) return go("eval-login");
+  const dept = session.evaluatorDept;
+  const round = session.evaluatorRound;
+  const evs = getEvaluators();
+  const info = (evs[dept] || {})[round];
+  const displayName = info ? `${info.name} ${info.title}` : (session.evaluatorName || "");
+  $app().innerHTML = `
+    <div class="card" style="max-width:520px;margin:40px auto">
+      <h2 style="margin:0 0 4px">🔑 비밀번호 변경</h2>
+      <div class="mini" style="margin-bottom:14px">${esc(dept)} · ${esc(displayRound(round))} 평가자 · ${esc(displayName)}</div>
+      <div class="notice info" style="margin-bottom:14px">
+        본인 계정의 로그인 비밀번호를 변경합니다. 저장 즉시 반영되며 다음 로그인부터 새 비밀번호를 사용하세요.
+      </div>
+      <div id="evpw-err"></div>
+      <div style="margin-bottom:10px">
+        <label>현재 비밀번호</label>
+        <input id="evpw-cur" type="password" autocomplete="current-password" placeholder="현재 비밀번호"/>
+      </div>
+      <div style="margin-bottom:10px">
+        <label>새 비밀번호 (4자 이상)</label>
+        <input id="evpw-new" type="password" autocomplete="new-password" placeholder="새 비밀번호"/>
+      </div>
+      <div style="margin-bottom:14px">
+        <label>새 비밀번호 확인</label>
+        <input id="evpw-new2" type="password" autocomplete="new-password" placeholder="새 비밀번호 확인"/>
+      </div>
+      <div class="flex" style="gap:8px;justify-content:flex-end">
+        <button class="secondary" onclick="go('eval-home')">취소</button>
+        <button onclick="submitEvalChangePw()">비밀번호 변경</button>
+      </div>
+    </div>
+  `;
+  setTimeout(() => { const el = document.getElementById("evpw-cur"); if (el) el.focus(); }, 50);
+}
+
+async function submitEvalChangePw() {
+  const dept = session.evaluatorDept;
+  const round = session.evaluatorRound;
+  const cur = (document.getElementById("evpw-cur").value || "").trim();
+  const np1 = (document.getElementById("evpw-new").value || "").trim();
+  const np2 = (document.getElementById("evpw-new2").value || "").trim();
+  const err = document.getElementById("evpw-err");
+  const showErr = (msg) => { err.innerHTML = `<div class="notice err">${esc(msg)}</div>`; };
+  const evs = getEvaluators();
+  const info = (evs[dept] || {})[round];
+  if (!info) return showErr("계정 정보를 찾을 수 없습니다. 다시 로그인해 주세요.");
+  if (!cur) return showErr("현재 비밀번호를 입력해 주세요.");
+  if (String(info.password) !== String(cur)) return showErr("현재 비밀번호가 일치하지 않습니다.");
+  if (!np1 || np1.length < 4) return showErr("새 비밀번호는 4자 이상이어야 합니다.");
+  if (np1 !== np2) return showErr("새 비밀번호 확인이 일치하지 않습니다.");
+  if (np1 === cur) return showErr("현재 비밀번호와 동일합니다. 다른 비밀번호를 입력해 주세요.");
+  const btn = document.querySelector('button[onclick="submitEvalChangePw()"]');
+  if (btn) { btn.disabled = true; btn.textContent = "저장 중…"; }
+  try {
+    if (IS_REMOTE()) {
+      await remotePost("updateEvaluator", { dept, round, fields: { password: np1 } });
+    }
+    // 로컬 캐시에도 반영
+    info.password = np1;
+    err.innerHTML = `<div class="notice info" style="background:#dcfce7;color:#166534;border:1px solid #86efac">✅ 비밀번호가 변경되었습니다. 다음 로그인부터 새 비밀번호를 사용해 주세요.</div>`;
+    setTimeout(() => { go("eval-home"); }, 1500);
+  } catch (e) {
+    showErr("저장 실패: " + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = "비밀번호 변경"; }
+  }
+}
+
 /* --- 평가자 홈 --- */
 function renderEvalHome() {
   if (!session.evaluatorDept) return go("eval-login");
@@ -1870,6 +1940,7 @@ function renderEvalHome() {
         <div class="flex" style="gap:8px;flex-wrap:wrap;justify-content:flex-end;align-items:center">
           <span class="period-badge">🗓 ${esc(periodLabel(getActivePeriod()))} 평가 진행 중</span>
           ${evaluatorHasAdminRight() ? `<button class="small" onclick="go('admin-home')" title="전체 평가 내용을 확인할 수 있습니다">🛠 관리자 대시보드</button>` : ``}
+          <button class="small ghost" onclick="go('eval-changepw')" title="본인 로그인 비밀번호 변경">🔑 비밀번호 변경</button>
           <button class="secondary small" onclick="logoutEvaluator()">로그아웃</button>
         </div>
       </div>
@@ -4517,6 +4588,7 @@ window.startEvaluatorFlow = startEvaluatorFlow;
 window.switchEvalRole = switchEvalRole;
 window.tryEvalLogin = tryEvalLogin;
 window.logoutEvaluator = logoutEvaluator;
+window.submitEvalChangePw = submitEvalChangePw;
 window.setEvalTab = setEvalTab;
 window.startEvalForm = startEvalForm;
 window.submitEval = submitEval;
