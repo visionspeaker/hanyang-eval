@@ -199,6 +199,30 @@
   .chip.done { background: #dcfce7; color: #166534; }
   .chip.pending { background: #fef3c7; color: #92400e; }
   .chip.rank { background: #f3f4f6; color: #374151; }
+  .chip.probation { background: #fee2e2; color: #991b1b; }
+  .emp-card.probation-card {
+    background: #f9fafb;
+    border-color: #d1d5db;
+    border-style: dashed;
+    cursor: not-allowed;
+    opacity: 0.9;
+  }
+  .emp-card.probation-card:hover {
+    border-color: #d1d5db;
+    box-shadow: none;
+    transform: none;
+  }
+  .emp-card.probation-card .name { color: #6b7280; }
+  .emp-card .probation-reason {
+    background: #fff7ed;
+    border-left: 3px solid #d97706;
+    padding: 6px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    color: #9a3412;
+    margin-top: 8px;
+    line-height: 1.4;
+  }
   .hero {
     text-align: center;
     padding: 48px 20px 32px;
@@ -643,7 +667,8 @@ function rebuildFromEmployees(serverEmps) {
   // EMPLOYEES 배열 교체 (in-place)
   EMPLOYEES.length = 0;
   list.forEach(e => EMPLOYEES.push({
-    dept: e.dept, name: e.name, rank: e.rank || "", rankCategory: e.rankCategory || "대리이하"
+    dept: e.dept, name: e.name, rank: e.rank || "", rankCategory: e.rankCategory || "대리이하",
+    notes: e.notes || ""
   }));
   // 임원(부장·이사) 자동 분배
   const execEmps = EMPLOYEES.filter(e => e.rank === "부장" || e.rank === "이사");
@@ -659,6 +684,21 @@ function rebuildFromEmployees(serverEmps) {
 (function() {
   Object.values(EXEC_TARGETS).forEach(arr => arr.forEach(t => EXEC_SET.add(t.dept + "|" + t.name)));
 })();
+
+// 수습(입사 초기) 평가 제외 처리
+//   employees 시트의 notes 필드에 "수습:2026-H2,2026-H1" 형식으로 저장
+//   지정된 반기에는 대상 목록에 표시되지만 평가는 비활성화
+//   지정되지 않은 반기에는 자동으로 정상 대상 복귀
+function getProbationExemptPeriods(emp) {
+  const notes = String((emp && emp.notes) || "");
+  const m = notes.match(/수습:([^\n\r]+)/);
+  if (!m) return [];
+  return m[1].split(",").map(s => s.trim()).filter(Boolean);
+}
+function isProbationExempt(emp, period) {
+  if (!emp || !period) return false;
+  return getProbationExemptPeriods(emp).includes(period);
+}
 
 // 직원 명단 (rankCategory: '과장이상' | '대리이하')
 // 부장·이사는 3차/4차 임원 평가 대상 (1차/2차 에서는 평가 대상 아님)
@@ -2010,19 +2050,39 @@ function renderEvalListTab(targets, doneMap) {
     return;
   }
   const isExec = session.evaluatorDept === "임원";
-  const cards = targets.map(e => `
-    <div class="emp-card" onclick="startEvalForm('${esc(e.dept)}','${esc(e.name)}')">
-      <div class="name">${esc(e.name)} <span class="chip rank">${esc(e.rank)}</span></div>
-      ${isExec ? `<div class="mini" style="font-weight:600;color:var(--primary)">${esc(e.dept)}</div>` : ""}
-      <div class="mini">${esc(e.rankCategory)} 평가표</div>
-      <div class="meta">
-        <span>${esc(displayRound(session.evaluatorRound))} 평가</span>
-        <span class="chip ${doneMap[e.name] ? 'done' : 'pending'}">
-          ${doneMap[e.name] ? '제출완료' : '미작성'}
-        </span>
+  const activePeriod = getActivePeriod() || resolveEvalPeriod();
+  const cards = targets.map(e => {
+    const probation = isProbationExempt(e, activePeriod);
+    if (probation) {
+      return `
+        <div class="emp-card probation-card" title="수습 기간으로 이번 반기 평가에서 제외됩니다">
+          <div class="name">${esc(e.name)} <span class="chip rank">${esc(e.rank)}</span></div>
+          ${isExec ? `<div class="mini" style="font-weight:600;color:var(--primary)">${esc(e.dept)}</div>` : ""}
+          <div class="mini">${esc(e.rankCategory)} 평가표</div>
+          <div class="meta">
+            <span>${esc(displayRound(session.evaluatorRound))} 평가</span>
+            <span class="chip probation">수습 · 평가 제외</span>
+          </div>
+          <div class="probation-reason">
+            입사 6개월 미만으로 이번 반기 평가 대상에서 제외됩니다. 다음 반기부터 자동 반영.
+          </div>
+        </div>
+      `;
+    }
+    return `
+      <div class="emp-card" onclick="startEvalForm('${esc(e.dept)}','${esc(e.name)}')">
+        <div class="name">${esc(e.name)} <span class="chip rank">${esc(e.rank)}</span></div>
+        ${isExec ? `<div class="mini" style="font-weight:600;color:var(--primary)">${esc(e.dept)}</div>` : ""}
+        <div class="mini">${esc(e.rankCategory)} 평가표</div>
+        <div class="meta">
+          <span>${esc(displayRound(session.evaluatorRound))} 평가</span>
+          <span class="chip ${doneMap[e.name] ? 'done' : 'pending'}">
+            ${doneMap[e.name] ? '제출완료' : '미작성'}
+          </span>
+        </div>
       </div>
-    </div>
-  `).join("");
+    `;
+  }).join("");
   body.innerHTML = `
     <div class="notice info">${isExec ? '임원 평가 대상자 카드를 클릭하면 평가표가 열립니다.' : '부서원 카드를 클릭하면 평가표가 열립니다.'} 제출 후에도 다시 저장할 수 있습니다.</div>
     <div class="employee-grid">${cards}</div>
@@ -2030,6 +2090,13 @@ function renderEvalListTab(targets, doneMap) {
 }
 
 function startEvalForm(dept, name) {
+  // 수습 제외 대상은 평가 폼 진입 차단
+  const emp = EMPLOYEES.find(e => e.dept === dept && e.name === name);
+  const activePeriod = getActivePeriod() || resolveEvalPeriod();
+  if (emp && isProbationExempt(emp, activePeriod)) {
+    alert(`${name}은(는) 수습 기간으로 이번 반기 평가 대상에서 제외됩니다.`);
+    return;
+  }
   session.selectedEmpDept = dept;
   session.selectedEmp = name;
   go("eval-form");
