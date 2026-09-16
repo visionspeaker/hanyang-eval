@@ -605,9 +605,10 @@ const DEFAULT_EVALUATORS = {
   },
   // 임원(3차·4차) — 부서 선택 시 "임원" 으로 표시
   "임원": {
-    "3차-조규오": { name: "조규오", title: "부사장",   password: "KR3DQN" }, // 경영지원부 강유석 부장 전담
-    "3차-임웅걸": { name: "임웅걸", title: "부사장",   password: "IW5FHS" }, // 그 외 부장들 담당
-    "4차":        { name: "양정일", title: "대표이사", password: "YJ9PTM" }  // 부장 9명 + 이사 2명 전체
+    "3차-조규오": { name: "조규오", title: "부사장",   password: "KR3DQN" }, // 경영지원부 강유석 · 신재생 송지훈
+    "3차-이석원": { name: "이석원", title: "전무",     password: "hyele0927!" }, // 부설연구소 조민웅·정택기
+    "3차-임웅걸": { name: "임웅걸", title: "부사장",   password: "IW5FHS" }, // 나머지 부장·이사
+    "4차":        { name: "양정일", title: "대표이사", password: "YJ9PTM" }  // 부장·이사 전체
   },
   // 인사/안전/교육 담당자 (근태·안전·교육 가감점 입력) — 로그인하면 가감점 관리 화면으로 진입
   "인사/안전/교육": {
@@ -621,10 +622,12 @@ const EXEC_TARGETS = {
     { dept: "경영지원부",   name: "강유석" },
     { dept: "신재생에너지영업부", name: "송지훈" }
   ],
+  "3차-이석원": [
+    { dept: "부설연구소",   name: "조민웅" },
+    { dept: "부설연구소",   name: "정택기" }
+  ],
   "3차-임웅걸": [
     { dept: "자재관리부",   name: "전기훈" },
-    { dept: "부설연구소",   name: "조민웅" },
-    { dept: "부설연구소",   name: "정택기" },
     { dept: "생산관리부",   name: "양정민" },
     { dept: "품질보증부",   name: "유창근" },
     { dept: "품질보증부",   name: "정영교" },
@@ -660,7 +663,10 @@ function isExecRound(round) {
 }
 
 // 서버 employees 명단으로 EMPLOYEES / EXEC_TARGETS / EXEC_SET 재구성
-// (조규오 담당은 강유석·송지훈, 임웅걸 담당은 그 외 부장·이사)
+// 3차 분배 규칙:
+//   · 조규오 부사장 담당: 강유석·송지훈 (2명)
+//   · 이석원 전무 담당: 부설연구소 소속 부장·이사 (조민웅·정택기)
+//   · 임웅걸 부사장 담당: 나머지 부장·이사 전원
 function rebuildFromEmployees(serverEmps) {
   const list = (serverEmps || []).filter(e => e && e.active !== false && e.dept && e.name);
   if (!list.length) return; // 서버 데이터 없으면 하드코딩 fallback 유지
@@ -673,8 +679,11 @@ function rebuildFromEmployees(serverEmps) {
   // 임원(부장·이사) 자동 분배
   const execEmps = EMPLOYEES.filter(e => e.rank === "부장" || e.rank === "이사");
   const kqNames = new Set(["강유석", "송지훈"]); // 조규오 담당 (사용자 지정)
-  EXEC_TARGETS["3차-조규오"] = execEmps.filter(e => kqNames.has(e.name)).map(e => ({dept: e.dept, name: e.name}));
-  EXEC_TARGETS["3차-임웅걸"] = execEmps.filter(e => !kqNames.has(e.name)).map(e => ({dept: e.dept, name: e.name}));
+  const isKq = e => kqNames.has(e.name);
+  const isSw = e => e.dept === "부설연구소" && !isKq(e); // 이석원 전무 담당 (부설연구소)
+  EXEC_TARGETS["3차-조규오"] = execEmps.filter(isKq).map(e => ({dept: e.dept, name: e.name}));
+  EXEC_TARGETS["3차-이석원"] = execEmps.filter(isSw).map(e => ({dept: e.dept, name: e.name}));
+  EXEC_TARGETS["3차-임웅걸"] = execEmps.filter(e => !isKq(e) && !isSw(e)).map(e => ({dept: e.dept, name: e.name}));
   EXEC_TARGETS["4차"] = execEmps.map(e => ({dept: e.dept, name: e.name}));
   // EXEC_SET 재계산
   EXEC_SET.clear();
@@ -2004,7 +2013,7 @@ function renderEvalHome() {
 // 임원(부장·이사) 평가는 3차(부사장) → 1차, 4차(대표이사) → 2차 로 재라벨
 function displayRound(round) {
   if (!round) return "";
-  if (round === "3차-조규오" || round === "3차-임웅걸") return "1차";
+  if (typeof round === "string" && round.startsWith("3차")) return "1차";
   if (round === "4차") return "2차";
   return round;
 }
