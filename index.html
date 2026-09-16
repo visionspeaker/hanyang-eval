@@ -197,7 +197,8 @@
   .chip.b { background: #d1fae5; color: var(--b-color); }
   .chip.c { background: #fee2e2; color: var(--c-color); }
   .chip.done { background: #dcfce7; color: #166534; }
-  .chip.pending { background: #fef3c7; color: #92400e; }
+  .chip.pending { background: #f3f4f6; color: #6b7280; }
+  .chip.draft { background: #dbeafe; color: #1e40af; }
   .chip.rank { background: #f3f4f6; color: #374151; }
   .chip.probation { background: #fee2e2; color: #991b1b; }
   .emp-card.probation-card {
@@ -1027,7 +1028,9 @@ function normalizeSettings(s) {
       id: String(p.id),
       status: allowed.indexOf(p.status) >= 0 ? p.status : "active",
       createdAt: p.createdAt || null,
-      closedAt: p.closedAt || null
+      closedAt: p.closedAt || null,
+      submissionOpensAt:  p.submissionOpensAt  || "",
+      submissionClosesAt: p.submissionClosesAt || ""
     });
   });
   let active = src.activePeriod || null;
@@ -1071,6 +1074,67 @@ function isPeriodEditable(id) {
   // 활성 반기는 항상 편집 가능, 마감된 반기는 관리자만 편집 가능
   if (id === getActivePeriod()) return true;
   return !!session.isAdmin;
+}
+
+// 활성 반기의 제출 가능 시간대 (관리자가 반기 관리에서 지정)
+function getSubmissionWindow(periodId) {
+  const p = getSettings().periods.find(x => x.id === (periodId || getActivePeriod()));
+  if (!p) return { opensAt: "", closesAt: "" };
+  return { opensAt: p.submissionOpensAt || "", closesAt: p.submissionClosesAt || "" };
+}
+// "before" | "open" | "closed" | "always" (설정 미지정 시)
+function getEvalWindowStatus(periodId) {
+  const w = getSubmissionWindow(periodId);
+  if (!w.opensAt && !w.closesAt) return "always";
+  const now = Date.now();
+  const start = w.opensAt ? new Date(w.opensAt).getTime() : null;
+  const end   = w.closesAt ? new Date(w.closesAt).getTime() : null;
+  if (start && now < start) return "before";
+  if (end && now > end)     return "closed";
+  return "open";
+}
+function canSubmitEval(periodId) {
+  const st = getEvalWindowStatus(periodId);
+  return st === "open" || st === "always" || !!session.isAdmin;
+}
+function canDraftEval(periodId) {
+  if (isPeriodClosed(periodId || getActivePeriod()) && !session.isAdmin) return false;
+  const st = getEvalWindowStatus(periodId);
+  if (st === "closed" && !session.isAdmin) return false;
+  return true;
+}
+function isEvalSubmitted(ev) {
+  return !!(ev && ev.submittedAt && String(ev.submittedAt).trim());
+}
+// 평가 창(제출 기간) 배너
+function renderSubmissionWindowBanner(periodId) {
+  const st = getEvalWindowStatus(periodId);
+  if (st === "always") return "";
+  const w = getSubmissionWindow(periodId);
+  const openTxt = fmtDateTime(w.opensAt);
+  const closeTxt = fmtDateTime(w.closesAt);
+  if (st === "before") {
+    return `<div class="notice" style="background:#fef3c7;border:1px solid #fbbf24;color:#78350f;padding:10px 12px;border-radius:8px;margin-bottom:12px;font-weight:600">🔒 평가 미리보기 모드 · 제출은 <b>${esc(openTxt)}</b> 부터 가능합니다. 지금은 임시저장만 됩니다.</div>`;
+  }
+  if (st === "open") {
+    return `<div class="notice" style="background:#dcfce7;border:1px solid #86efac;color:#166534;padding:10px 12px;border-radius:8px;margin-bottom:12px;font-weight:600">🟢 평가 진행 중 · 마감 <b>${esc(closeTxt)}</b> 까지 제출 가능합니다.</div>`;
+  }
+  if (st === "closed") {
+    return `<div class="notice" style="background:#fee2e2;border:1px solid #fca5a5;color:#991b1b;padding:10px 12px;border-radius:8px;margin-bottom:12px;font-weight:600">🔴 평가 제출 기간이 종료되었습니다. (마감 <b>${esc(closeTxt)}</b>) 조회만 가능합니다.</div>`;
+  }
+  return "";
+}
+function fmtDateTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return String(iso);
+  const yy = d.getFullYear();
+  const mm = String(d.getMonth()+1).padStart(2,"0");
+  const dd = String(d.getDate()).padStart(2,"0");
+  const HH = String(d.getHours()).padStart(2,"0");
+  const MM = String(d.getMinutes()).padStart(2,"0");
+  const dow = ["일","월","화","수","목","금","토"][d.getDay()];
+  return `${yy}-${mm}-${dd}(${dow}) ${HH}:${MM}`;
 }
 
 function loadStore(key, fallback) {
@@ -1973,7 +2037,9 @@ function renderEvalHome() {
   targets.forEach(t => {
     // getEvaluation 이 반기 매칭 실패 시 fallback 으로 최근 레코드까지 탐색 → 정합성 없는 저장(legacy H1)도 인식
     const ev = getEvaluation(t.dept, t.name, round, activePeriod);
-    doneMap[t.name] = !!ev;
+    if (!ev) doneMap[t.name] = "none";
+    else if (isEvalSubmitted(ev)) doneMap[t.name] = "submitted";
+    else doneMap[t.name] = "draft";
   });
   const initialTab = session.postLoginTab === "view" ? "view" : "list";
   session.postLoginTab = null; // 1회성 힌트
@@ -1994,6 +2060,7 @@ function renderEvalHome() {
         </div>
       </div>
     </div>
+    ${renderSubmissionWindowBanner(activePeriod)}
     <div class="card">
       <div class="tabs">
         <div class="tab ${initialTab==='list'?'active':''}" onclick="setEvalTab('list')">평가 대상자</div>
@@ -2038,7 +2105,10 @@ function setEvalTab(which) {
     const activePeriod = getActivePeriod() || resolveEvalPeriod();
     const doneMap = {};
     targets.forEach(t => {
-      doneMap[t.name] = !!getEvaluation(t.dept, t.name, round, activePeriod);
+      const ev = getEvaluation(t.dept, t.name, round, activePeriod);
+      if (!ev) doneMap[t.name] = "none";
+      else if (isEvalSubmitted(ev)) doneMap[t.name] = "submitted";
+      else doneMap[t.name] = "draft";
     });
     renderEvalListTab(targets, doneMap);
   } else {
@@ -2078,6 +2148,11 @@ function renderEvalListTab(targets, doneMap) {
         </div>
       `;
     }
+    const st = doneMap[e.name] || "none";
+    let chipCls, chipLbl;
+    if (st === "submitted") { chipCls = "done";     chipLbl = "제출완료"; }
+    else if (st === "draft"){ chipCls = "draft";    chipLbl = "임시저장"; }
+    else                    { chipCls = "pending";  chipLbl = "미작성";   }
     return `
       <div class="emp-card" onclick="startEvalForm('${esc(e.dept)}','${esc(e.name)}')">
         <div class="name">${esc(e.name)} <span class="chip rank">${esc(e.rank)}</span></div>
@@ -2085,9 +2160,7 @@ function renderEvalListTab(targets, doneMap) {
         <div class="mini">${esc(e.rankCategory)} 평가표</div>
         <div class="meta">
           <span>${esc(displayRound(session.evaluatorRound))} 평가</span>
-          <span class="chip ${doneMap[e.name] ? 'done' : 'pending'}">
-            ${doneMap[e.name] ? '제출완료' : '미작성'}
-          </span>
+          <span class="chip ${chipCls}">${chipLbl}</span>
         </div>
       </div>
     `;
@@ -2137,17 +2210,18 @@ function renderEvalForm() {
       </div>
     </div>
     <div class="card">
-      ${existing ? `<div class="notice info">이미 <b>${esc(periodLabel(activePeriod))}</b>에 저장된 평가가 있습니다. 수정 후 다시 제출하면 갱신됩니다.</div>` : ""}
+      ${renderSubmissionWindowBanner(activePeriod)}
+      ${existing ? `<div class="notice info">이미 <b>${esc(periodLabel(activePeriod))}</b>에 ${isEvalSubmitted(existing) ? "<b>제출 완료된 평가</b>" : "<b>임시저장된 평가</b>"}가 있습니다. 수정 후 다시 저장하면 갱신됩니다.</div>` : ""}
       <div class="notice" style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:12px;padding:10px 12px;background:#f5f7fb;border:1px solid #dbe4f2;border-radius:8px;font-size:12px;color:#333">
         <span><b>A</b> 매우우수 · 100%</span>
-        <span><b>B</b> 우수 · 90%</span>
-        <span><b>C</b> 보통 · 80%</span>
-        <span><b>D</b> 미흡 · 70%</span>
-        <span><b>E</b> 매우미흡 · 60%</span>
+        <span><b>B</b> 우수 · 80%</span>
+        <span><b>C</b> 보통 · 60%</span>
+        <span><b>D</b> 미흡 · 40%</span>
+        <span><b>E</b> 매우미흡 · 20%</span>
         <span style="color:var(--muted)">등급 클릭 → 항목·문항 점수 자동 반영</span>
       </div>
       <div id="form-err"></div>
-      <form id="eval-form" onsubmit="event.preventDefault();submitEval();">
+      <form id="eval-form" onsubmit="event.preventDefault();submitEval('submit');">
         <table class="eval-table">
           <thead>
             <tr>
@@ -2172,7 +2246,10 @@ function renderEvalForm() {
         </div>
         <div class="flex between" style="margin-top:20px">
           <button class="secondary" type="button" onclick="go('eval-home')">취소</button>
-          <button type="submit">${existing ? "수정 제출" : "제출"}</button>
+          <div class="flex" style="gap:8px">
+            <button id="btn-eval-draft" class="secondary" type="button" onclick="submitEval('draft')" ${canDraftEval(activePeriod) ? "" : "disabled"} title="입력한 내용을 임시로 저장 (미평가 문항 허용)">💾 임시저장</button>
+            <button id="btn-eval-submit" type="submit" ${canSubmitEval(activePeriod) ? "" : "disabled"} title="${canSubmitEval(activePeriod) ? "최종 제출" : "평가 제출 기간에만 가능"}">📤 ${existing && isEvalSubmitted(existing) ? "수정 제출" : "제출"}</button>
+          </div>
         </div>
       </form>
     </div>
@@ -2313,19 +2390,33 @@ function recalcTotal() {
   });
 }
 
-async function submitEval() {
+// mode: "submit" (최종 제출) | "draft" (임시저장)
+async function submitEval(mode) {
+  mode = (mode === "draft") ? "draft" : "submit";
   const round = session.evaluatorRound;
   const empName = session.selectedEmp;
   const empDept = session.selectedEmpDept || session.evaluatorDept;
   const emp = EMPLOYEES.find(e => e.dept === empDept && e.name === empName);
   const activePeriod = getActivePeriod() || resolveEvalPeriod();
   const form = getFormForEmp(activePeriod, emp);
-  // 안전장치: 활성 반기가 어떤 이유로든 마감 상태라면 제출 차단
+  const errEl = document.getElementById("form-err");
+  const showErr = (msg) => {
+    errEl.innerHTML = `<div class="notice err">${msg}</div>`;
+    window.scrollTo({top:0, behavior:"smooth"});
+  };
   if (isPeriodClosed(activePeriod) && !session.isAdmin) {
-    document.getElementById("form-err").innerHTML =
-      `<div class="notice err">현재 반기가 마감된 상태입니다. 관리자에게 문의해 주세요.</div>`;
-    window.scrollTo({top:0,behavior:"smooth"});
-    return;
+    return showErr("현재 반기가 마감된 상태입니다. 관리자에게 문의해 주세요.");
+  }
+  const winStatus = getEvalWindowStatus(activePeriod);
+  if (mode === "submit" && !canSubmitEval(activePeriod)) {
+    const w = getSubmissionWindow(activePeriod);
+    if (winStatus === "before")
+      return showErr(`평가 제출 기간이 아직 시작되지 않았습니다. <b>${esc(fmtDateTime(w.opensAt))}</b> 부터 제출 가능합니다. 지금은 임시저장만 가능해요.`);
+    if (winStatus === "closed")
+      return showErr(`평가 제출 기간이 종료되었습니다. (마감: <b>${esc(fmtDateTime(w.closesAt))}</b>) 수정이 필요하면 관리자에게 문의해 주세요.`);
+  }
+  if (mode === "draft" && !canDraftEval(activePeriod)) {
+    return showErr("현재는 임시저장도 불가한 상태입니다. 관리자에게 문의해 주세요.");
   }
   const scores = {};
   let missing = [];
@@ -2347,35 +2438,40 @@ async function submitEval() {
       }
     });
   });
-  if (missing.length) {
-    document.getElementById("form-err").innerHTML =
-      `<div class="notice err">모든 항목을 평가해 주세요. 미평가 항목: ${missing.map(esc).join(", ")}</div>`;
-    window.scrollTo({top:0,behavior:"smooth"});
-    return;
+  if (mode === "submit" && missing.length) {
+    return showErr(`모든 항목을 평가해 주세요. 미평가 항목: ${missing.map(esc).join(", ")}`);
   }
-  // 소수점 부동소수 오차 제거: 소수 첫째 자리 반올림, 정수면 그대로
   const totalRaw = Object.values(scores).reduce((a,b)=>a+b,0);
   const total = Math.round(totalRaw * 10) / 10;
-  const comment = document.getElementById("comment").value;
+  const comment = (document.getElementById("comment") || {}).value || "";
   const ev = {
     dept: empDept, empName, empRank: emp.rank, rankCategory: emp.rankCategory,
     round,
     period: activePeriod,
     evaluatorName: session.evaluatorName,
     scores, total, comment,
-    submittedAt: new Date().toISOString()
+    submittedAt: mode === "submit" ? new Date().toISOString() : ""
   };
-  const btn = document.querySelector("#eval-form button[type=submit]");
-  if (btn) { btn.disabled = true; btn.textContent = "저장 중…"; }
+  const btnSubmit = document.getElementById("btn-eval-submit");
+  const btnDraft  = document.getElementById("btn-eval-draft");
+  const activeBtn = mode === "submit" ? btnSubmit : btnDraft;
+  const activeOrig = activeBtn ? activeBtn.innerHTML : "";
+  if (btnSubmit) btnSubmit.disabled = true;
+  if (btnDraft)  btnDraft.disabled  = true;
+  if (activeBtn) activeBtn.innerHTML = mode === "submit" ? "제출 중…" : "임시저장 중…";
   try {
     await upsertEvaluation(ev);
-    alert(`${empName} ${emp.rank} 평가가 저장되었습니다. (총점 ${total}점)`);
+    if (mode === "submit") {
+      alert(`${empName} ${emp.rank} 평가가 제출되었습니다. (총점 ${total}점)`);
+    } else {
+      alert(`${empName} ${emp.rank} 평가가 임시저장되었습니다. 계속 이어서 작성할 수 있어요.`);
+    }
     go("eval-home");
   } catch (e) {
-    document.getElementById("form-err").innerHTML =
-      `<div class="notice err">서버 저장 실패: ${esc(e.message)}. 네트워크 상태를 확인해 주세요.</div>`;
-    if (btn) { btn.disabled = false; btn.textContent = "제출"; }
-    window.scrollTo({top:0,behavior:"smooth"});
+    showErr(`서버 저장 실패: ${esc(e.message)}. 네트워크 상태를 확인해 주세요.`);
+    if (btnSubmit) btnSubmit.disabled = !canSubmitEval(activePeriod);
+    if (btnDraft)  btnDraft.disabled  = !canDraftEval(activePeriod);
+    if (activeBtn) activeBtn.innerHTML = activeOrig;
   }
 }
 
@@ -2957,6 +3053,9 @@ function renderAdminPeriods(body) {
     </table>
     </div>
 
+    <h3 style="margin-top:24px">평가 제출 기간 (활성 반기)</h3>
+    ${renderSubmissionWindowEditor(active)}
+
     <h3 style="margin-top:24px">새 반기 생성</h3>
     <div class="flex" style="gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:6px">
       <div>
@@ -2980,6 +3079,62 @@ function renderAdminPeriods(body) {
     </div>
     <div id="periods-msg"></div>
   `;
+}
+
+// 평가 제출 기간 편집 UI (반기 관리 탭 안)
+function renderSubmissionWindowEditor(periodId) {
+  if (!periodId) return `<div class="notice info">활성 반기가 없어 제출 기간을 설정할 수 없습니다.</div>`;
+  const w = getSubmissionWindow(periodId);
+  const st = getEvalWindowStatus(periodId);
+  const stLabel = st === "always" ? "설정 없음 (항상 제출 가능)"
+                : st === "before" ? "🔒 시작 전 (임시저장만)"
+                : st === "open"   ? "🟢 진행 중 (제출 가능)"
+                : "🔴 종료";
+  return `
+    <div class="notice info" style="margin-bottom:10px">
+      평가자가 실제로 제출할 수 있는 시간대를 설정합니다. 시작 전에는 임시저장만 가능하고, 종료 이후에는 조회만 가능합니다.
+      <br>비워두면 <b>기간 제한 없음</b> (항상 제출 가능).
+      <br>현재 상태: <b>${stLabel}</b>
+    </div>
+    <div class="flex" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+      <div>
+        <label class="mini">시작 일시</label>
+        <input id="sw-opens" type="datetime-local" value="${esc(w.opensAt)}" style="width:220px"/>
+      </div>
+      <div>
+        <label class="mini">종료 일시</label>
+        <input id="sw-closes" type="datetime-local" value="${esc(w.closesAt)}" style="width:220px"/>
+      </div>
+      <button onclick="adminSaveSubmissionWindow('${esc(periodId)}')">💾 저장</button>
+      <button class="secondary" onclick="adminClearSubmissionWindow('${esc(periodId)}')">기간 해제</button>
+    </div>
+    <div id="sw-msg" class="mini" style="margin-top:8px"></div>
+  `;
+}
+
+async function adminSaveSubmissionWindow(periodId) {
+  const opens = (document.getElementById("sw-opens").value || "").trim();
+  const closes = (document.getElementById("sw-closes").value || "").trim();
+  const msg = document.getElementById("sw-msg");
+  if (opens && closes && new Date(opens).getTime() >= new Date(closes).getTime()) {
+    msg.innerHTML = `<span style="color:var(--danger)">종료 일시가 시작 일시보다 뒤여야 합니다.</span>`;
+    return;
+  }
+  try {
+    await remotePost("setSubmissionWindow", { period: periodId, opensAt: opens, closesAt: closes });
+    const p = getSettings().periods.find(x => x.id === periodId);
+    if (p) { p.submissionOpensAt = opens; p.submissionClosesAt = closes; }
+    msg.innerHTML = `<span style="color:var(--success);font-weight:600">✅ 저장됨</span>`;
+    setTimeout(() => renderAdminPeriods(document.getElementById("admin-body")), 500);
+  } catch (e) {
+    msg.innerHTML = `<span style="color:var(--danger)">저장 실패: ${esc(e.message)}</span>`;
+  }
+}
+async function adminClearSubmissionWindow(periodId) {
+  if (!confirm("평가 제출 기간을 해제합니다. 이후 언제든 제출 가능합니다.\n계속할까요?")) return;
+  document.getElementById("sw-opens").value = "";
+  document.getElementById("sw-closes").value = "";
+  await adminSaveSubmissionWindow(periodId);
 }
 
 async function adminSetActivePeriod(periodId) {
@@ -4689,6 +4844,8 @@ window.changeAdminPassword = changeAdminPassword;
 window.resetAdminPassword = resetAdminPassword;
 window.setViewPeriod = setViewPeriod;
 window.adminSetActivePeriod = adminSetActivePeriod;
+window.adminSaveSubmissionWindow = adminSaveSubmissionWindow;
+window.adminClearSubmissionWindow = adminClearSubmissionWindow;
 window.adminClosePeriod = adminClosePeriod;
 window.adminCreatePeriod = adminCreatePeriod;
 window.cmpChangePeriod = cmpChangePeriod;
