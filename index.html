@@ -1778,34 +1778,88 @@ function startEvaluatorFlow(targetTab) {
   go("eval-login");
 }
 
-// 로그인된 평가자 이름 (예: "강유석 부장")으로 등록된 모든 평가자 계정 조회
-//  → 같은 사람이 여러 역할을 겸임하는 경우 (강유석 = 경영지원부/1차 + 인사/안전/교육/담당)
+// 특정 평가자의 진입 메뉴를 가상 역할로 통합
+//   여러 (부서, 차수) 조합을 사업부 단위로 묶어 하나의 메뉴로 표시
+//   includeOverrides: 해당 가상 역할에 개인 배정(오버라이드) 대상도 포함할지 여부
+const VIRTUAL_ROLES = {
+  "임웅걸": [
+    {
+      key: "sales-combined",
+      label: "수배전사업부 통합 2차 평가",
+      desc: "수배전영업부 · 자재관리부 소속 직원 대상 통합 2차 평가",
+      combines: [
+        { dept: "수배전영업부", round: "2차" },
+        { dept: "자재관리부",   round: "2차" }
+      ],
+      includeOverrides: true,
+      lookupDept: "수배전영업부", lookupRound: "2차"
+    },
+    {
+      key: "exec-3",
+      label: "임원 평가 (3차)",
+      desc: "부장·이사 임원 평가 대상 진행",
+      combines: [
+        { dept: "임원", round: "3차-임웅걸" }
+      ],
+      includeOverrides: false,
+      lookupDept: "임원", lookupRound: "3차-임웅걸"
+    }
+  ]
+};
+
+// 로그인된 평가자 이름으로 접근 가능한 역할 조회
+//  · VIRTUAL_ROLES 정의된 이름이면 가상 역할 목록 반환
+//  · 그 외에는 evs 시트의 (부서, 차수) 반환
 function findMyEvaluatorAccounts(evaluatorName) {
   const raw = String(evaluatorName || "").split(" ")[0].trim();
   if (!raw) return [];
   const evs = getEvaluators();
-  const out = [];
+  const baseRoles = [];
   Object.entries(evs).forEach(([dept, rounds]) => {
     Object.entries(rounds).forEach(([round, info]) => {
-      if (info && info.name === raw) out.push({ dept, round, info });
+      if (info && info.name === raw) baseRoles.push({ dept, round, info });
     });
   });
-  return out;
+  const virtual = VIRTUAL_ROLES[raw];
+  if (virtual && virtual.length) {
+    return virtual.map(v => {
+      const lookup = evs[v.lookupDept] && evs[v.lookupDept][v.lookupRound];
+      return {
+        dept: v.lookupDept,
+        round: v.lookupRound,
+        info: lookup || (baseRoles[0] && baseRoles[0].info) || { name: raw, title: "" },
+        virtualKey: v.key,
+        virtualLabel: v.label,
+        virtualDesc: v.desc,
+        virtualCombines: v.combines,
+        includeOverrides: v.includeOverrides
+      };
+    });
+  }
+  return baseRoles;
 }
 
 // 카드에서 특정 역할로 전환 (재로그인 없이 세션 정보만 갱신)
-function switchEvalRole(dept, round) {
+function switchEvalRole(dept, round, virtualKey) {
   const evs = getEvaluators();
   const info = evs[dept] && evs[dept][round];
   if (!info) return;
   session.evaluatorDept = dept;
   session.evaluatorRound = round;
   session.evaluatorName = `${info.name} ${info.title}`;
-  // 임원 4차(대표이사)는 관리자 권한도 유지
+  session.virtualRoleKey = virtualKey || null;
   if (dept === "임원" && round === "4차") session.isAdmin = true;
   saveSession();
   if (dept === "인사/안전/교육") return go("adj-admin");
   return go("eval-home");
+}
+
+// 세션의 현재 가상 역할 정의 반환
+function getCurrentVirtualRole() {
+  if (!session.virtualRoleKey) return null;
+  const raw = String(session.evaluatorName || "").split(" ")[0].trim();
+  const list = VIRTUAL_ROLES[raw] || [];
+  return list.find(v => v.key === session.virtualRoleKey) || null;
 }
 
 // 로그인된 사람이 여러 역할을 겸임할 때 표시할 진입 선택 화면
@@ -1813,23 +1867,30 @@ function renderEvalPicker() {
   const roles = findMyEvaluatorAccounts(session.evaluatorName);
   if (!roles.length) return go("eval-login");
   if (roles.length === 1) {
-    // 단일 계정이면 곧바로 해당 화면으로
     const r = roles[0];
-    return switchEvalRole(r.dept, r.round);
+    return switchEvalRole(r.dept, r.round, r.virtualKey);
   }
   const cards = roles.map(r => {
     const isAdj = r.dept === "인사/안전/교육";
-    const label = isAdj
-      ? "근태·안전·교육 가감점 관리"
-      : `${r.dept} ${r.round} 평가`;
-    const desc = isAdj
-      ? "전 직원 대상 카테고리별 가감점(±3점) 부여"
-      : `해당 부서 소속 직원 대상 ${r.round} 평가 진행`;
-    const isCurrent = (session.evaluatorDept === r.dept && session.evaluatorRound === r.round);
+    let label, desc;
+    if (r.virtualLabel) {
+      label = r.virtualLabel;
+      desc = r.virtualDesc;
+    } else if (isAdj) {
+      label = "근태·안전·교육 가감점 관리";
+      desc = "전 직원 대상 카테고리별 가감점(±3점) 부여";
+    } else {
+      label = `${r.dept} ${r.round} 평가`;
+      desc = `해당 부서 소속 직원 대상 ${r.round} 평가 진행`;
+    }
+    const isCurrent = r.virtualKey
+      ? (session.virtualRoleKey === r.virtualKey)
+      : (session.evaluatorDept === r.dept && session.evaluatorRound === r.round && !session.virtualRoleKey);
+    const vk = r.virtualKey ? `,'${esc(r.virtualKey)}'` : ",null";
     return `
       <div class="choice-card c-eval" role="button" tabindex="0"
-           onclick="switchEvalRole('${esc(r.dept)}','${esc(r.round)}')"
-           onkeydown="if(event.key==='Enter')switchEvalRole('${esc(r.dept)}','${esc(r.round)}')"
+           onclick="switchEvalRole('${esc(r.dept)}','${esc(r.round)}'${vk})"
+           onkeydown="if(event.key==='Enter')switchEvalRole('${esc(r.dept)}','${esc(r.round)}'${vk})"
            style="cursor:pointer">
         <h3 style="margin:0 0 4px">${esc(label)}${isCurrent ? ' <span class="mini" style="color:var(--success)">· 현재</span>' : ''}</h3>
         <p style="margin:0;color:var(--muted)">${esc(desc)}</p>
@@ -1972,6 +2033,7 @@ function logoutEvaluator() {
   session.selectedEmp = null;
   session.selectedEmpDept = null;
   session.selectedRound = null;
+  session.virtualRoleKey = null;
   // 관리자 세션도 남아있지 않으면 저장 자체를 비움
   if (session.isAdmin) saveSession(); else clearSession();
   go("home");
@@ -2065,11 +2127,13 @@ function renderEvalHome() {
   session.postLoginTab = null; // 1회성 힌트
   const titleRound = displayRound(round);
   const viewTabLabel = dept === "임원" ? "임원 평가 결과 보기" : "우리 부서 결과 보기";
+  const virt = getCurrentVirtualRole();
+  const roleTitle = virt ? virt.label : `${dept} · ${titleRound} 평가자`;
   $app().innerHTML = `
     <div class="card">
       <div class="flex between">
         <div>
-          <h2 style="margin:0">${esc(dept)} · ${esc(titleRound)} 평가자</h2>
+          <h2 style="margin:0">${esc(roleTitle)}</h2>
           <div class="mini">로그인: ${esc(session.evaluatorName)}</div>
         </div>
         <div class="flex" style="gap:8px;flex-wrap:wrap;justify-content:flex-end;align-items:center">
@@ -2135,29 +2199,43 @@ function getCurrentEvaluatorName(dept, round) {
 
 // 로그인한 평가자의 대상 목록 계산 (기본 + 개인 오버라이드)
 function computeTargetsForEvaluator(dept, round, evaluatorNameFull) {
-  const rawEvalName = String(evaluatorNameFull || "").split(" ")[0].trim();
-  let baseTargets;
-  if (dept === "임원") {
-    const specs = EXEC_TARGETS[round] || [];
-    baseTargets = specs
-      .map(s => EMPLOYEES.find(e => e.dept === s.dept && e.name === s.name))
-      .filter(Boolean)
-      .map(e => Object.assign({}, e, { _assignedRound: round }));
+  const virt = getCurrentVirtualRole();
+  let baseTargets = [];
+  let includeOverrides = true;
+  if (virt) {
+    virt.combines.forEach(({dept: d, round: r}) => {
+      baseTargets.push(...computeBaseTargetsForRole(d, r, evaluatorNameFull));
+    });
+    includeOverrides = !!virt.includeOverrides;
   } else {
-    const currentEvalName = getCurrentEvaluatorName(dept, round);
-    baseTargets = EMPLOYEES
-      .filter(e => e.dept === dept && !isExecEmp(e) && e.name !== currentEvalName)
-      .filter(e => {
-        const ov = getEvaluatorOverrideForRound(e, round);
-        if (!ov) return true;
-        return ov.name === rawEvalName;
-      })
-      .map(e => Object.assign({}, e, { _assignedRound: round }));
+    baseTargets = computeBaseTargetsForRole(dept, round, evaluatorNameFull);
   }
+  if (!includeOverrides) return baseTargets;
   const overrideExtras = getOverrideTargetsFor(evaluatorNameFull)
     .filter(x => !baseTargets.some(t => t.dept === x.emp.dept && t.name === x.emp.name && t._assignedRound === x.round))
     .map(x => Object.assign({}, x.emp, { _assignedRound: x.round, _override: true }));
   return baseTargets.concat(overrideExtras);
+}
+
+// 단일 (부서, 차수) 역할에 대한 base 대상 계산 (오버라이드 반영, 개인 배정 extras 제외)
+function computeBaseTargetsForRole(dept, round, evaluatorNameFull) {
+  const rawEvalName = String(evaluatorNameFull || "").split(" ")[0].trim();
+  if (dept === "임원") {
+    const specs = EXEC_TARGETS[round] || [];
+    return specs
+      .map(s => EMPLOYEES.find(e => e.dept === s.dept && e.name === s.name))
+      .filter(Boolean)
+      .map(e => Object.assign({}, e, { _assignedRound: round }));
+  }
+  const currentEvalName = getCurrentEvaluatorName(dept, round);
+  return EMPLOYEES
+    .filter(e => e.dept === dept && !isExecEmp(e) && e.name !== currentEvalName)
+    .filter(e => {
+      const ov = getEvaluatorOverrideForRound(e, round);
+      if (!ov) return true;
+      return ov.name === rawEvalName;
+    })
+    .map(e => Object.assign({}, e, { _assignedRound: round }));
 }
 
 function renderEvalListTab(targets, doneMap) {
