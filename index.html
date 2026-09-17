@@ -710,6 +710,37 @@ function isProbationExempt(emp, period) {
   return getProbationExemptPeriods(emp).includes(period);
 }
 
+// 개인별 평가자 오버라이드
+//   notes 형식: "평가자오버라이드:1차=이름|직급;2차=이름|직급"
+function getEvaluatorOverrides(emp) {
+  const notes = String((emp && emp.notes) || "");
+  const m = notes.match(/평가자오버라이드:([^\n\r]+)/);
+  const out = {};
+  if (!m) return out;
+  m[1].split(";").forEach(part => {
+    const seg = part.trim();
+    const mm = seg.match(/^(\S+?)\s*=\s*([^|]+)\|(.+)$/);
+    if (mm) out[mm[1].trim()] = { name: mm[2].trim(), title: mm[3].trim() };
+  });
+  return out;
+}
+function getEvaluatorOverrideForRound(emp, round) {
+  const ov = getEvaluatorOverrides(emp);
+  return ov[round] || null;
+}
+function getOverrideTargetsFor(evaluatorName) {
+  const raw = String(evaluatorName || "").split(" ")[0].trim();
+  if (!raw) return [];
+  const out = [];
+  EMPLOYEES.forEach(e => {
+    const ov = getEvaluatorOverrides(e);
+    Object.keys(ov).forEach(round => {
+      if (ov[round].name === raw) out.push({ emp: e, round });
+    });
+  });
+  return out;
+}
+
 // 직원 명단 (rankCategory: '과장이상' | '대리이하')
 // 부장·이사는 3차/4차 임원 평가 대상 (1차/2차 에서는 평가 대상 아님)
 // initData 후 서버 employees 로 in-place 교체됨
@@ -1940,6 +1971,7 @@ function logoutEvaluator() {
   session.evaluatorName = null;
   session.selectedEmp = null;
   session.selectedEmpDept = null;
+  session.selectedRound = null;
   // 관리자 세션도 남아있지 않으면 저장 자체를 비움
   if (session.isAdmin) saveSession(); else clearSession();
   go("home");
@@ -2021,22 +2053,10 @@ function renderEvalHome() {
   const round = session.evaluatorRound;
   const activePeriod = getActivePeriod() || resolveEvalPeriod();
   const evals = getEvaluationsByPeriod(activePeriod);
-  let targets;
-  if (dept === "임원") {
-    // 3차/4차 평가자 — EXEC_TARGETS 에 정의된 대상만 평가
-    const specs = EXEC_TARGETS[round] || [];
-    targets = specs
-      .map(s => EMPLOYEES.find(e => e.dept === s.dept && e.name === s.name))
-      .filter(Boolean);
-  } else {
-    // 부서 1차/2차 평가자 — 부서원 중 부장·이사(임원 평가 대상) 제외, 본인 제외
-    const emps = EMPLOYEES.filter(e => e.dept === dept && !isExecEmp(e));
-    targets = emps.filter(e => !(e.name === getCurrentEvaluatorName(dept, round)));
-  }
+  const targets = computeTargetsForEvaluator(dept, round, session.evaluatorName);
   const doneMap = {};
   targets.forEach(t => {
-    // getEvaluation 이 반기 매칭 실패 시 fallback 으로 최근 레코드까지 탐색 → 정합성 없는 저장(legacy H1)도 인식
-    const ev = getEvaluation(t.dept, t.name, round, activePeriod);
+    const ev = getEvaluation(t.dept, t.name, t._assignedRound || round, activePeriod);
     if (!ev) doneMap[t.name] = "none";
     else if (isEvalSubmitted(ev)) doneMap[t.name] = "submitted";
     else doneMap[t.name] = "draft";
@@ -2092,20 +2112,11 @@ function setEvalTab(which) {
   const round = session.evaluatorRound;
   if (which === "list") {
     tabs[0].classList.add("active");
-    let targets;
-    if (dept === "임원") {
-      const specs = EXEC_TARGETS[round] || [];
-      targets = specs
-        .map(s => EMPLOYEES.find(e => e.dept === s.dept && e.name === s.name))
-        .filter(Boolean);
-    } else {
-      targets = EMPLOYEES.filter(e => e.dept === dept && !isExecEmp(e))
-        .filter(e => !(e.name === getCurrentEvaluatorName(dept, round)));
-    }
+    const targets = computeTargetsForEvaluator(dept, round, session.evaluatorName);
     const activePeriod = getActivePeriod() || resolveEvalPeriod();
     const doneMap = {};
     targets.forEach(t => {
-      const ev = getEvaluation(t.dept, t.name, round, activePeriod);
+      const ev = getEvaluation(t.dept, t.name, t._assignedRound || round, activePeriod);
       if (!ev) doneMap[t.name] = "none";
       else if (isEvalSubmitted(ev)) doneMap[t.name] = "submitted";
       else doneMap[t.name] = "draft";
@@ -2120,6 +2131,33 @@ function setEvalTab(which) {
 function getCurrentEvaluatorName(dept, round) {
   const evs = getEvaluators();
   return evs[dept] && evs[dept][round] ? evs[dept][round].name : null;
+}
+
+// 로그인한 평가자의 대상 목록 계산 (기본 + 개인 오버라이드)
+function computeTargetsForEvaluator(dept, round, evaluatorNameFull) {
+  const rawEvalName = String(evaluatorNameFull || "").split(" ")[0].trim();
+  let baseTargets;
+  if (dept === "임원") {
+    const specs = EXEC_TARGETS[round] || [];
+    baseTargets = specs
+      .map(s => EMPLOYEES.find(e => e.dept === s.dept && e.name === s.name))
+      .filter(Boolean)
+      .map(e => Object.assign({}, e, { _assignedRound: round }));
+  } else {
+    const currentEvalName = getCurrentEvaluatorName(dept, round);
+    baseTargets = EMPLOYEES
+      .filter(e => e.dept === dept && !isExecEmp(e) && e.name !== currentEvalName)
+      .filter(e => {
+        const ov = getEvaluatorOverrideForRound(e, round);
+        if (!ov) return true;
+        return ov.name === rawEvalName;
+      })
+      .map(e => Object.assign({}, e, { _assignedRound: round }));
+  }
+  const overrideExtras = getOverrideTargetsFor(evaluatorNameFull)
+    .filter(x => !baseTargets.some(t => t.dept === x.emp.dept && t.name === x.emp.name && t._assignedRound === x.round))
+    .map(x => Object.assign({}, x.emp, { _assignedRound: x.round, _override: true }));
+  return baseTargets.concat(overrideExtras);
 }
 
 function renderEvalListTab(targets, doneMap) {
@@ -2153,13 +2191,15 @@ function renderEvalListTab(targets, doneMap) {
     if (st === "submitted") { chipCls = "done";     chipLbl = "제출완료"; }
     else if (st === "draft"){ chipCls = "draft";    chipLbl = "임시저장"; }
     else                    { chipCls = "pending";  chipLbl = "미작성";   }
+    const assignedRound = e._assignedRound || session.evaluatorRound;
+    const roundLbl = e._override ? "평가" : `${esc(displayRound(assignedRound))} 평가`;
     return `
-      <div class="emp-card" onclick="startEvalForm('${esc(e.dept)}','${esc(e.name)}')">
+      <div class="emp-card" onclick="startEvalForm('${esc(e.dept)}','${esc(e.name)}','${esc(assignedRound)}')">
         <div class="name">${esc(e.name)} <span class="chip rank">${esc(e.rank)}</span></div>
         ${isExec ? `<div class="mini" style="font-weight:600;color:var(--primary)">${esc(e.dept)}</div>` : ""}
-        <div class="mini">${esc(e.rankCategory)} 평가표</div>
+        <div class="mini">${esc(e.rankCategory)} 평가표${e._override ? ' <span class="chip" style="background:#eff6ff;color:#1e40af;font-size:10px;padding:1px 6px;margin-left:4px">개인 배정</span>' : ''}</div>
         <div class="meta">
-          <span>${esc(displayRound(session.evaluatorRound))} 평가</span>
+          <span>${roundLbl}</span>
           <span class="chip ${chipCls}">${chipLbl}</span>
         </div>
       </div>
@@ -2171,7 +2211,7 @@ function renderEvalListTab(targets, doneMap) {
   `;
 }
 
-function startEvalForm(dept, name) {
+function startEvalForm(dept, name, assignedRound) {
   // 수습 제외 대상은 평가 폼 진입 차단
   const emp = EMPLOYEES.find(e => e.dept === dept && e.name === name);
   const activePeriod = getActivePeriod() || resolveEvalPeriod();
@@ -2181,12 +2221,13 @@ function startEvalForm(dept, name) {
   }
   session.selectedEmpDept = dept;
   session.selectedEmp = name;
+  session.selectedRound = assignedRound || null;
   go("eval-form");
 }
 
 /* --- 평가 입력 폼 --- */
 function renderEvalForm() {
-  const round = session.evaluatorRound;
+  const round = session.selectedRound || session.evaluatorRound;
   const empName = session.selectedEmp;
   // 임원(3차/4차) 평가자는 다른 부서 직원을 평가하므로 empDept 를 별도 사용
   const empDept = session.selectedEmpDept || session.evaluatorDept;
@@ -2393,7 +2434,8 @@ function recalcTotal() {
 // mode: "submit" (최종 제출) | "draft" (임시저장)
 async function submitEval(mode) {
   mode = (mode === "draft") ? "draft" : "submit";
-  const round = session.evaluatorRound;
+  // 개인 오버라이드 대상은 오버라이드에 지정된 라운드로 저장
+  const round = session.selectedRound || session.evaluatorRound;
   const empName = session.selectedEmp;
   const empDept = session.selectedEmpDept || session.evaluatorDept;
   const emp = EMPLOYEES.find(e => e.dept === empDept && e.name === empName);
