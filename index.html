@@ -675,7 +675,8 @@ function rebuildFromEmployees(serverEmps) {
   EMPLOYEES.length = 0;
   list.forEach(e => EMPLOYEES.push({
     dept: e.dept, name: e.name, rank: e.rank || "", rankCategory: e.rankCategory || "대리이하",
-    notes: e.notes || ""
+    notes: e.notes || "",
+    pw: e.pw == null ? "" : String(e.pw)
   }));
   // 임원(부장·이사) 자동 분배 — 직급 순(부장 → 이사) + 가나다순으로 정렬
   const execEmps = EMPLOYEES.filter(e => e.rank === "부장" || e.rank === "이사")
