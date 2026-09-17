@@ -1809,6 +1809,49 @@ function go(view) {
   render();
 }
 
+/* ==== 실시간 반영: 주기적 자동 갱신 ==== */
+// 폼 작성 중에는 갱신하지 않고, 목록·현황 화면에서만 서버 데이터를 다시 불러와 재렌더
+let _autoRefreshTimer = null;
+let _autoRefreshBusy = false;
+const AUTO_REFRESH_MS = 30000;
+const AUTO_REFRESH_SKIP_VIEWS = ["eval-form", "self-eval", "force-changepw", "eval-changepw", "adj-admin"];
+
+async function autoRefreshTick(force) {
+  if (!IS_REMOTE()) return;
+  if (_autoRefreshBusy) return;
+  if (!force) {
+    if (document.hidden) return;
+    if (AUTO_REFRESH_SKIP_VIEWS.includes(session.view)) return;
+    // 입력 중이면 건너뜀
+    const ae = document.activeElement;
+    if (ae && ["INPUT", "TEXTAREA", "SELECT"].includes(ae.tagName)) return;
+    // 공지 팝업이 떠 있으면 건너뜀
+    if (document.getElementById("announce-overlay")) return;
+  }
+  _autoRefreshBusy = true;
+  try {
+    await initData();
+    render();
+  } catch (e) {
+    // 네트워크 일시 오류는 조용히 무시 (다음 주기에 재시도)
+  } finally {
+    _autoRefreshBusy = false;
+  }
+}
+function startAutoRefresh() {
+  stopAutoRefresh();
+  _autoRefreshTimer = setInterval(() => autoRefreshTick(false), AUTO_REFRESH_MS);
+  // 탭이 다시 활성화되면 즉시 한 번 갱신
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) autoRefreshTick(false);
+  });
+  window.addEventListener("focus", () => autoRefreshTick(false));
+}
+function stopAutoRefresh() {
+  if (_autoRefreshTimer) clearInterval(_autoRefreshTimer);
+  _autoRefreshTimer = null;
+}
+
 // 결과 조회 반기 드롭다운에서 호출
 function setViewPeriod(periodId) {
   session.viewPeriod = periodId || null;
@@ -1933,7 +1976,7 @@ function renderUserHome() {
           </svg>
         </span>
         <h3>자기평가</h3>
-        <p>${selfDone ? '<span style="color:var(--success);font-weight:700">제출 완료</span> · 수정 가능' : '본인 평가 작성 (미제출)'}</p>
+        <p>${selfDone ? '<span style="color:var(--success);font-weight:700">✅ 제출 완료</span> · 수정 불가' : '본인 평가 작성 (미제출)'}</p>
       </div>`);
   }
   if (showEval) {
@@ -2539,6 +2582,8 @@ function renderSelfEvalForm() {
   const existing = getEvaluation(emp.dept, emp.name, SELF_ROUND, period);
   const submitted = isEvalSubmitted(existing);
   const closed = isPeriodClosed(period) && !session.isAdmin;
+  // 제출 완료된 자기평가는 수정 불가 (관리자만 잠금 해제 가능)
+  const locked = submitted && !session.isAdmin;
   $app().innerHTML = `
     <div class="card">
       <div class="flex between">
@@ -2553,13 +2598,21 @@ function renderSelfEvalForm() {
       </div>
     </div>
     <div class="card">
-      ${existing ? `<div class="notice info">이미 ${submitted ? "<b>제출 완료된 자기평가</b>" : "<b>임시저장된 자기평가</b>"}가 있습니다. 수정 후 다시 저장하면 갱신됩니다.</div>` : ""}
+      ${locked
+        ? `<div class="notice" style="background:#dcfce7;border:1px solid #86efac;color:#166534;font-weight:600;margin-bottom:12px">
+             ✅ 자기평가 제출이 완료되었습니다. <span style="font-weight:400">제출된 자기평가는 <b>수정할 수 없습니다</b>. 수정이 필요하면 인사팀(관리자)에 문의해 주세요.</span>
+             <div class="mini" style="margin-top:4px;font-weight:400">제출 일시: ${esc(fmtDateTime(existing.submittedAt))}</div>
+           </div>`
+        : (existing
+            ? `<div class="notice info">임시저장된 자기평가가 있습니다. 이어서 작성할 수 있으며, <b>제출하면 더 이상 수정할 수 없습니다</b>.</div>`
+            : `<div class="notice info">각 문항의 등급을 선택하고 실적 내용을 작성해 주세요. <b>제출하면 더 이상 수정할 수 없으니</b> 신중히 확인 후 제출해 주세요.</div>`)}
       <div class="notice" style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:12px;padding:10px 12px;background:#f5f7fb;border:1px solid #dbe4f2;border-radius:8px;font-size:12px;color:#333">
         <span><b>A</b> 매우우수</span><span><b>B</b> 우수</span><span><b>C</b> 보통</span><span><b>D</b> 미흡</span><span><b>E</b> 매우미흡</span>
         <span style="color:var(--muted)">각 문항에 해당하는 등급을 선택해 주세요.</span>
       </div>
       <div id="form-err"></div>
       <form id="eval-form" onsubmit="event.preventDefault();submitSelfEval('submit');">
+        <div ${locked ? 'style="pointer-events:none;opacity:0.85"' : ''}>
         <table class="eval-table">
           <thead>
             <tr>
@@ -2571,23 +2624,27 @@ function renderSelfEvalForm() {
           </thead>
           <tbody>${renderFormItems(form, existing, true)}</tbody>
         </table>
+        </div>
         <div style="margin-top:20px">
-          <label>2026년 4월 ~ 9월 실적 및 업무 내용 <span style="color:var(--danger)">*</span></label>
-          <div class="mini" style="margin-bottom:6px;color:var(--muted)">담당했던 주요 업무, 달성한 실적, 개선 사항 등을 구체적으로 작성해 주세요.</div>
-          <textarea id="comment" rows="8" placeholder="예)&#10;· 4월: OO 프로젝트 설계 도면 12건 작성, 납기 100% 준수&#10;· 6월: 자재 발주 프로세스 개선으로 리드타임 3일 단축&#10;· 8월: 품질 부적합 건수 전년 대비 20% 감소">${esc(existing ? existing.comment : "")}</textarea>
+          <label>2026년 4월 ~ 9월 실적 및 업무 내용 ${locked ? "" : '<span style="color:var(--danger)">*</span>'}</label>
+          ${locked ? "" : `<div class="mini" style="margin-bottom:6px;color:var(--muted)">담당했던 주요 업무, 달성한 실적, 개선 사항 등을 구체적으로 작성해 주세요.</div>`}
+          <textarea id="comment" rows="8" ${locked ? "readonly style=\"background:#f9fafb;color:#374151\"" : ""} placeholder="예)&#10;· 4월: OO 프로젝트 설계 도면 12건 작성, 납기 100% 준수&#10;· 6월: 자재 발주 프로세스 개선으로 리드타임 3일 단축&#10;· 8월: 품질 부적합 건수 전년 대비 20% 감소">${esc(existing ? existing.comment : "")}</textarea>
         </div>
         <div class="flex between" style="margin-top:20px">
-          <button class="secondary" type="button" onclick="go('home')">취소</button>
+          <button class="secondary" type="button" onclick="go('home')">${locked ? "← 홈으로" : "취소"}</button>
+          ${locked ? `<span class="mini" style="color:var(--success);font-weight:700">제출 완료 · 수정 불가</span>` : `
           <div class="flex" style="gap:8px">
-            <button id="btn-eval-draft" class="secondary" type="button" onclick="submitSelfEval('draft')" ${closed ? "disabled" : ""} title="작성 중인 내용을 임시로 저장">💾 임시저장</button>
-            <button id="btn-eval-submit" type="submit" ${closed ? "disabled" : ""}>📤 ${submitted ? "수정 제출" : "제출"}</button>
-          </div>
+            <button id="btn-eval-draft" class="secondary" type="button" onclick="submitSelfEval('draft')" ${closed ? "disabled" : ""} title="작성 중인 내용을 임시로 저장 (제출 전까지 수정 가능)">💾 임시저장</button>
+            <button id="btn-eval-submit" type="submit" ${closed ? "disabled" : ""} title="제출하면 수정할 수 없습니다">📤 제출하기</button>
+          </div>`}
         </div>
       </form>
     </div>
   `;
-  attachFormHandlers(form);
-  recalcTotal();
+  if (!locked) {
+    attachFormHandlers(form);
+    recalcTotal();
+  }
 }
 
 // 자기평가 저장 (제출 시 전 문항 필수 + 실적 내용 필수)
@@ -2603,6 +2660,11 @@ async function submitSelfEval(mode) {
   };
   if (isPeriodClosed(period) && !session.isAdmin) {
     return showErr("현재 반기가 마감된 상태입니다. 관리자에게 문의해 주세요.");
+  }
+  // 이미 제출 완료된 자기평가는 수정 차단
+  const already = getEvaluation(emp.dept, emp.name, SELF_ROUND, period);
+  if (isEvalSubmitted(already) && !session.isAdmin) {
+    return showErr("이미 제출이 완료된 자기평가입니다. 수정할 수 없습니다. 수정이 필요하면 인사팀(관리자)에 문의해 주세요.");
   }
   const scores = {};
   const missing = [];
@@ -2644,10 +2706,16 @@ async function submitSelfEval(mode) {
   if (btnSubmit) btnSubmit.disabled = true;
   if (btnDraft)  btnDraft.disabled  = true;
   if (activeBtn) activeBtn.innerHTML = mode === "submit" ? "제출 중…" : "임시저장 중…";
+  if (mode === "submit" && !confirm("자기평가를 제출하시겠습니까?\n\n제출하면 더 이상 수정할 수 없습니다.")) {
+    if (btnSubmit) btnSubmit.disabled = false;
+    if (btnDraft)  btnDraft.disabled  = false;
+    if (activeBtn) activeBtn.innerHTML = orig;
+    return;
+  }
   try {
     await upsertEvaluation(ev);
     alert(mode === "submit"
-      ? "자기평가가 제출되었습니다. 이제 1차·2차 평가자가 평가를 진행할 수 있습니다."
+      ? "자기평가가 제출되었습니다. 이제 1차·2차 평가자가 평가를 진행할 수 있습니다.\n\n제출된 내용은 수정할 수 없습니다."
       : "자기평가가 임시저장되었습니다. 이어서 작성할 수 있어요.");
     go("home");
   } catch (e) {
@@ -2748,7 +2816,9 @@ function renderEvalHome() {
     else if (isEvalSubmitted(ev)) doneMap[t.name] = "submitted";
     else doneMap[t.name] = "draft";
   });
-  const initialTab = session.postLoginTab === "view" ? "view" : "list";
+  // 자동 갱신 시에도 보고 있던 탭이 유지되도록 세션에 기억
+  const initialTab = session.postLoginTab === "view" ? "view" : (session.evalTab || "list");
+  session.evalTab = initialTab;
   session.postLoginTab = null; // 1회성 힌트
   const titleRound = displayRound(round);
   const viewTabLabel = dept === "임원" ? "임원 평가 결과 보기" : "우리 부서 결과 보기";
@@ -2795,6 +2865,7 @@ function displayRound(round) {
 }
 
 function setEvalTab(which) {
+  session.evalTab = which;
   document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
   const tabs = document.querySelectorAll(".tab");
   const dept = session.evaluatorDept;
@@ -2914,7 +2985,7 @@ function renderEvalListTab(targets, doneMap) {
       `;
     }
     const st = doneMap[e.name] || "none";
-    // 상태 → 칩 class · 라벨
+    // 상태 → 칩 class · 라벨 (평가자 본인의 평가 진행 상태)
     let chipCls, chipLbl;
     if (st === "submitted") { chipCls = "done";     chipLbl = "제출완료"; }
     else if (st === "draft"){ chipCls = "draft";    chipLbl = "임시저장"; }
@@ -2927,6 +2998,7 @@ function renderEvalListTab(targets, doneMap) {
         <div class="name">${esc(e.name)} <span class="chip rank">${esc(e.rank)}</span></div>
         ${isExec ? `<div class="mini" style="font-weight:600;color:var(--primary)">${esc(e.dept)}</div>` : ""}
         <div class="mini">${esc(e.rankCategory)} 평가표${e._override ? ' <span class="chip" style="background:#eff6ff;color:#1e40af;font-size:10px;padding:1px 6px;margin-left:4px">개인 배정</span>' : ''}</div>
+        ${needsSelf ? `<div style="margin-top:6px"><span class="chip" style="background:#dcfce7;color:#166534;font-size:11px">✅ 자기평가 완료</span></div>` : ``}
         <div class="meta">
           <span>${roundLbl}</span>
           <span class="chip ${chipCls}">${chipLbl}</span>
@@ -3769,6 +3841,7 @@ function renderAdminSelfStatus(body) {
           <th style="width:150px">부서</th><th>이름</th><th style="width:80px">직급</th>
           <th style="width:100px">상태</th><th style="width:80px">자기 총점</th>
           <th style="width:80px">실적 기재</th><th style="width:170px">제출 일시</th>
+          <th style="width:110px">관리</th>
         </tr></thead>
         <tbody>${rows.map(r => `
           <tr>
@@ -3779,11 +3852,35 @@ function renderAdminSelfStatus(body) {
             <td style="text-align:center">${fmtScore(r.total)}</td>
             <td style="text-align:center">${r.hasComment ? "✅" : "—"}</td>
             <td style="text-align:center" class="mini">${esc(r.when)}</td>
-          </tr>`).join("") || `<tr><td colspan="7" style="text-align:center" class="muted">대상자가 없습니다.</td></tr>`}
+            <td style="text-align:center">${r.cls === "done"
+              ? `<button class="small secondary" onclick="adminUnlockSelfEval('${esc(r.dept)}','${esc(r.name)}')" title="제출 잠금을 풀어 본인이 다시 수정할 수 있게 합니다">🔓 잠금 해제</button>`
+              : `<span class="mini muted">-</span>`}</td>
+          </tr>`).join("") || `<tr><td colspan="8" style="text-align:center" class="muted">대상자가 없습니다.</td></tr>`}
         </tbody>
       </table>
     </div>
   `;
+}
+
+// 관리자: 제출 완료된 자기평가 잠금 해제 (본인이 다시 수정 가능하도록)
+async function adminUnlockSelfEval(dept, name) {
+  if (!confirm(`${name} 님의 자기평가 제출 잠금을 해제합니다.\n\n해제하면 본인이 다시 수정·재제출할 수 있으며, 재제출 전까지 1·2차 평가자는 해당 인원을 평가할 수 없습니다.\n\n계속할까요?`)) return;
+  const period = resolveViewPeriod();
+  const ev = getSelfEvaluation(dept, name, period);
+  if (!ev) return alert("자기평가 기록을 찾을 수 없습니다.");
+  try {
+    await upsertEvaluation({
+      dept, empName: name, empRank: ev.empRank, rankCategory: ev.rankCategory,
+      round: SELF_ROUND, period,
+      evaluatorName: ev.evaluatorName,
+      scores: ev.scores, total: ev.total, comment: ev.comment,
+      submittedAt: ""   // 제출 해제 → 임시저장 상태로 전환
+    });
+    alert(`${name} 님의 자기평가 잠금이 해제되었습니다.`);
+    renderAdminSelfStatus(document.getElementById("admin-body"));
+  } catch (e) {
+    alert("실패: " + e.message);
+  }
 }
 
 /* --- 관리자 대시보드 --- */
@@ -5754,6 +5851,7 @@ window.logoutUser = logoutUser;
 window.submitForceChangePw = submitForceChangePw;
 window.submitSelfEval = submitSelfEval;
 window.toggleSelfRef = toggleSelfRef;
+window.adminUnlockSelfEval = adminUnlockSelfEval;
 window.adminClosePeriod = adminClosePeriod;
 window.adminCreatePeriod = adminCreatePeriod;
 window.cmpChangePeriod = cmpChangePeriod;
@@ -5797,6 +5895,8 @@ async function bootstrap() {
   // 저장된 로그인 세션 복원 (한 번 로그인하면 로그아웃 전까지 유지)
   loadSession();
   render();
+  // 자기평가 제출 등 다른 사용자의 변경 사항을 실시간 반영
+  startAutoRefresh();
 }
 bootstrap();
 </script>
