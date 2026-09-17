@@ -1835,9 +1835,16 @@ function render() {
 
 /* --- 홈: 로그인 안 했으면 로그인 화면, 했으면 개인 메뉴 --- */
 function renderHome() {
-  if (!session.userName) return renderUnifiedLogin();
+  if (!session.userName) {
+    renderUnifiedLogin();
+    // 공지 팝업은 로그인 전 화면에서 먼저 노출
+    maybeShowAnnouncementPopup();
+    return;
+  }
   if (session.mustChangePw) return go("force-changepw");
-  return renderUserHome();
+  renderUserHome();
+  // 로그인 전에 이미 봤다면 재노출하지 않음 (페이지 로드당 1회)
+  maybeShowAnnouncementPopup();
 }
 
 /* --- 통합 로그인 (이름 + 비밀번호) --- */
@@ -1865,7 +1872,7 @@ function renderUnifiedLogin() {
       <div id="login-err"></div>
       <div style="margin-bottom:10px">
         <label>이름</label>
-        <input id="uni-name" type="text" autocomplete="username" placeholder="예: 이용석"/>
+        <input id="uni-name" type="text" autocomplete="username" placeholder="예: 김한양"/>
       </div>
       <div style="margin-bottom:14px">
         <label>비밀번호</label>
@@ -2012,8 +2019,6 @@ function renderUserHome() {
       </div>
     </div>
   `;
-  // 홈 진입 시 공지 팝업 (관리자가 반기 관리에서 설정한 문구가 있으면 표시)
-  maybeShowAnnouncementPopup();
 }
 
 /* --- 최초 로그인 시 강제 비밀번호 변경 --- */
@@ -2074,8 +2079,10 @@ async function submitForceChangePw() {
   }
 }
 
-// 공지 팝업 렌더 · 24시간 억제(오늘 다시 보지 않기)
+// 공지 팝업 렌더 · 24시간 억제(오늘 다시 보지 않기) · 페이지 로드당 1회만 노출
+let _announceShownThisLoad = false;
 function maybeShowAnnouncementPopup() {
+  if (_announceShownThisLoad) return;
   const a = getAnnouncement();
   if (!a.title && !a.body) return;
   // 24시간 억제 확인
@@ -2108,6 +2115,7 @@ function maybeShowAnnouncementPopup() {
     </div>
   `;
   document.body.appendChild(overlay);
+  _announceShownThisLoad = true;
 }
 function dismissAnnouncePopup(rememberToday) {
   const el = document.getElementById("announce-overlay");
