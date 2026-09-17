@@ -2715,13 +2715,13 @@ async function submitSelfEval(mode) {
     if (item.subItems && item.subItems.length) {
       item.subItems.forEach((sub, subIdx) => {
         const key = `${item.id}#${subIdx}`;
-        const cell = document.getElementById(`score-${key}`);
+        const cell = evalFormRoot().querySelector(`[id="score-${CSS.escape(key)}"]`);
         const v = parseFloat(cell.textContent);
         if (isNaN(v)) missing.push(`${item.name} / ${sub.name}`);
         else scores[key] = v;
       });
     } else {
-      const cell = document.getElementById(`score-${item.id}`);
+      const cell = evalFormRoot().querySelector(`[id="score-${CSS.escape(item.id)}"]`);
       const v = parseFloat(cell.textContent);
       if (isNaN(v)) missing.push(item.name);
       else scores[item.id] = v;
@@ -3243,13 +3243,14 @@ function renderFormItems(form, existing, selfMode, opts) {
 }
 
 function attachFormHandlers(form) {
-  document.querySelectorAll(".score-cell").forEach(el => {
+  const root = evalFormRoot();
+  root.querySelectorAll(".score-cell").forEach(el => {
     el.addEventListener("click", () => {
       const key = el.dataset.key;
       const item = el.dataset.item;
       const score = parseFloat(el.dataset.score);
       // 같은 셀 그룹(같은 key) 하이라이트 해제 (unchecked 기본색으로 복원)
-      document.querySelectorAll(`.score-cell[data-key="${key}"]`).forEach(c => {
+      root.querySelectorAll(`.score-cell[data-key="${key}"]`).forEach(c => {
         c.classList.remove("checked");
         c.style.background = "#fff";
         c.style.color = "#374151";
@@ -3259,7 +3260,7 @@ function attachFormHandlers(form) {
       el.style.background = "var(--primary)";
       el.style.color = "#fff";
       el.style.borderColor = "var(--primary)";
-      const cell = document.getElementById(`score-${key}`);
+      const cell = root.querySelector(`[id="score-${CSS.escape(key)}"]`);
       if (cell) cell.textContent = Number.isInteger(score) ? score : score.toFixed(1);
       // 항목 소계 업데이트
       updateItemSum(item);
@@ -3268,11 +3269,18 @@ function attachFormHandlers(form) {
   });
 }
 
+// 점수 집계는 반드시 "평가자 본인 입력 폼" 안에서만 수행한다.
+// (같은 화면에 읽기 전용 자기평가 참고표가 함께 렌더링되므로 document 전역 조회 금지)
+function evalFormRoot() {
+  return document.getElementById("eval-form") || document;
+}
+
 function updateItemSum(itemId) {
-  const el = document.getElementById(`itemsum-${itemId}`);
+  const root = evalFormRoot();
+  const el = root.querySelector(`[id="itemsum-${CSS.escape(itemId)}"]`);
   if (!el) return;
   let sum = 0, hasAny = false;
-  document.querySelectorAll(`.subtotal-cell[data-item="${itemId}"]`).forEach(c => {
+  root.querySelectorAll(`.subtotal-cell[data-item="${itemId}"]`).forEach(c => {
     const v = parseFloat(c.textContent);
     if (!isNaN(v)) { sum += v; hasAny = true; }
   });
@@ -3282,8 +3290,9 @@ function updateItemSum(itemId) {
 }
 
 function recalcTotal() {
+  const root = evalFormRoot();
   let total = 0;
-  document.querySelectorAll(".subtotal-cell").forEach(c => {
+  root.querySelectorAll(".subtotal-cell").forEach(c => {
     const v = parseFloat(c.textContent);
     if (!isNaN(v)) total += v;
   });
@@ -3294,7 +3303,7 @@ function recalcTotal() {
     el.textContent = Number.isInteger(r) ? r : r.toFixed(1);
   }
   // 항목 소계 셀 초기화
-  document.querySelectorAll("[id^='itemsum-']").forEach(el2 => {
+  root.querySelectorAll("[id^='itemsum-']").forEach(el2 => {
     updateItemSum(el2.id.replace("itemsum-", ""));
   });
 }
@@ -3339,13 +3348,13 @@ async function submitEval(mode) {
       if (item.subItems && item.subItems.length) {
         item.subItems.forEach((sub, subIdx) => {
           const key = `${item.id}#${subIdx}`;
-          const cell = document.getElementById(`score-${key}`);
+          const cell = evalFormRoot().querySelector(`[id="score-${CSS.escape(key)}"]`);
           const v = parseFloat(cell.textContent);
           if (isNaN(v)) missing.push(`${item.name} / ${sub.name}`);
           else scores[key] = v;
         });
       } else {
-        const cell = document.getElementById(`score-${item.id}`);
+        const cell = evalFormRoot().querySelector(`[id="score-${CSS.escape(item.id)}"]`);
         const v = parseFloat(cell.textContent);
         if (isNaN(v)) missing.push(item.name);
         else scores[item.id] = v;
