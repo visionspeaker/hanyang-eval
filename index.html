@@ -3951,15 +3951,34 @@ async function adminUnlockSelfEval(dept, name) {
 }
 
 /* --- 관리자 대시보드 --- */
+// 평가자 계정(비밀번호) 탭은 인사 담당 관리자만 열람 가능. 대표이사 등 다른 관리자에게는 숨김.
+const ACCOUNT_ADMIN_NAMES = new Set(["강유석"]);
+function canSeeAccountsTab() {
+  return ACCOUNT_ADMIN_NAMES.has(String(session.userName || "").trim());
+}
+
 function renderAdminHome() {
   if (!isAdminUser()) return go("home");
-  const tab = session.adminTab || "results";
+  let tab = session.adminTab || "results";
+  if (tab === "accounts" && !canSeeAccountsTab()) tab = "results";
+  const tabDefs = [
+    ["results",    "전체 평가결과"],
+    ["selfstatus", "자기평가 현황"],
+    ["dept",       "부서별 분포"],
+    ["accounts",   "평가자 계정"],
+    ["data",       "데이터 / 내보내기"],
+    ["periods",    "반기 관리"],
+    ["compare",    "반기 비교"],
+    ["employees",  "직원 관리"],
+    ["forms",      "평가 항목 관리"],
+    ["security",   "보안"]
+  ].filter(([key]) => key !== "accounts" || canSeeAccountsTab());
   $app().innerHTML = `
     <div class="card">
       <div class="flex between">
         <div>
           <h2 style="margin:0">관리자 대시보드</h2>
-          <div class="mini">전체 평가결과 · 부서별 분포 · 평가자 계정 · 반기 관리${session.evaluatorDept === "임원" && session.evaluatorRound === "4차" ? ` · 대표이사 열람 중 (${esc(session.evaluatorName||"")})` : ``}</div>
+          <div class="mini">전체 평가결과 · 부서별 분포${canSeeAccountsTab() ? " · 평가자 계정" : ""} · 반기 관리${session.evaluatorDept === "임원" && session.evaluatorRound === "4차" ? ` · 대표이사 열람 중 (${esc(session.evaluatorName||"")})` : ``}</div>
         </div>
         <div class="flex" style="gap:8px;flex-wrap:wrap;justify-content:flex-end;align-items:center">
           <span class="period-badge">🗓 활성: ${esc(periodLabel(getActivePeriod()))}</span>
@@ -3970,16 +3989,9 @@ function renderAdminHome() {
     </div>
     <div class="card">
       <div class="tabs">
-        <div class="tab ${tab==='results'?'active':''}" onclick="setAdminTab('results')">전체 평가결과</div>
-        <div class="tab ${tab==='selfstatus'?'active':''}" onclick="setAdminTab('selfstatus')">자기평가 현황</div>
-        <div class="tab ${tab==='dept'?'active':''}"    onclick="setAdminTab('dept')">부서별 분포</div>
-        <div class="tab ${tab==='accounts'?'active':''}" onclick="setAdminTab('accounts')">평가자 계정</div>
-        <div class="tab ${tab==='data'?'active':''}"     onclick="setAdminTab('data')">데이터 / 내보내기</div>
-        <div class="tab ${tab==='periods'?'active':''}"  onclick="setAdminTab('periods')">반기 관리</div>
-        <div class="tab ${tab==='compare'?'active':''}"  onclick="setAdminTab('compare')">반기 비교</div>
-        <div class="tab ${tab==='employees'?'active':''}" onclick="setAdminTab('employees')">직원 관리</div>
-        <div class="tab ${tab==='forms'?'active':''}" onclick="setAdminTab('forms')">평가 항목 관리</div>
-        <div class="tab ${tab==='security'?'active':''}" onclick="setAdminTab('security')">보안</div>
+        ${tabDefs.map(([key, label]) =>
+          `<div class="tab ${tab===key?'active':''}" data-tab="${key}" onclick="setAdminTab('${key}')">${label}</div>`
+        ).join("")}
       </div>
       <div id="admin-body"></div>
     </div>
@@ -3988,16 +4000,17 @@ function renderAdminHome() {
 }
 
 function setAdminTab(tab) {
+  // 권한 없는 탭 접근 차단 (직접 호출 대비)
+  if (tab === "accounts" && !canSeeAccountsTab()) tab = "results";
   session.adminTab = tab;
   document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
-  const map = { results:0, selfstatus:1, dept:2, accounts:3, data:4, periods:5, compare:6, employees:7, forms:8, security:9 };
-  const tabs = document.querySelectorAll(".tab");
-  if (tabs[map[tab]]) tabs[map[tab]].classList.add("active");
+  const el = document.querySelector(`.tab[data-tab="${tab}"]`);
+  if (el) el.classList.add("active");
   const body = document.getElementById("admin-body");
   if (tab === "results") renderAdminResults(body);
   else if (tab === "selfstatus") renderAdminSelfStatus(body);
   else if (tab === "dept") renderAdminDeptDist(body);
-  else if (tab === "accounts") renderAdminAccounts(body);
+  else if (tab === "accounts") { if (canSeeAccountsTab()) renderAdminAccounts(body); else renderAdminResults(body); }
   else if (tab === "data") renderAdminData(body);
   else if (tab === "periods") renderAdminPeriods(body);
   else if (tab === "compare") renderAdminCompare(body);
