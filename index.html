@@ -718,8 +718,9 @@ function isProbationExempt(emp, period) {
   return getProbationExemptPeriods(emp).includes(period);
 }
 
-// 개인별 평가자 오버라이드
+// 개인별 평가자 오버라이드 (부서 기본 평가자 대신 특정 사람이 평가)
 //   notes 형식: "평가자오버라이드:1차=이름|직급;2차=이름|직급"
+//   각 라운드는 선택적. 해당 라운드가 없으면 부서 기본 평가자가 그대로 평가.
 function getEvaluatorOverrides(emp) {
   const notes = String((emp && emp.notes) || "");
   const m = notes.match(/평가자오버라이드:([^\n\r]+)/);
@@ -736,6 +737,8 @@ function getEvaluatorOverrideForRound(emp, round) {
   const ov = getEvaluatorOverrides(emp);
   return ov[round] || null;
 }
+// 특정 평가자 이름에게 배정된 모든 오버라이드 대상 조회
+//   반환: [{emp, round}]  (round 는 1차 / 2차 등)
 function getOverrideTargetsFor(evaluatorName) {
   const raw = String(evaluatorName || "").split(" ")[0].trim();
   if (!raw) return [];
@@ -955,12 +958,14 @@ function groupKeyForEmp(emp) {
   if (emp.groupKey) return emp.groupKey;
   return emp.rankCategory === "과장이상" ? "manager" : "staff";
 }
-// 반기·그룹별 폼 스키마 조회 (서버 스냅샷 우선, 없으면 기본 폼)
+// 반기·그룹별 폼 스키마 조회
+//  1) 지정 반기의 스냅샷 정확 매칭
+//  2) 매칭되는 스냅샷이 없으면 같은 그룹의 가장 최근 반기 스냅샷 사용 (활성 반기가 없거나 신규 반기에서 유용)
+//  3) 그것도 없으면 코드에 내장된 기본 폼
 function getFormForGroup(period, groupKey) {
   const schemas = _cache.formSchemas || [];
   const hit = schemas.find(s => s.period === period && s.groupKey === groupKey);
   if (hit && hit.form) return hit.form;
-  // 매칭되는 스냅샷이 없으면 같은 그룹의 가장 최근 반기 스냅샷 사용 (활성 반기가 없거나 신규 반기에서 유용)
   const groupSchemas = schemas
     .filter(s => s.groupKey === groupKey && s.form)
     .slice()
@@ -1155,15 +1160,17 @@ function canSubmitEval(periodId) {
   return st === "open" || st === "always" || !!session.isAdmin;
 }
 function canDraftEval(periodId) {
+  // 마감된 반기(status) 또는 제출 마감 후에는 임시저장도 불가 (관리자 제외)
   if (isPeriodClosed(periodId || getActivePeriod()) && !session.isAdmin) return false;
   const st = getEvalWindowStatus(periodId);
   if (st === "closed" && !session.isAdmin) return false;
   return true;
 }
+// 평가 상태 결정: submittedAt 이 비어 있으면 "임시저장", 채워져 있으면 "제출완료"
 function isEvalSubmitted(ev) {
   return !!(ev && ev.submittedAt && String(ev.submittedAt).trim());
 }
-// 평가 창(제출 기간) 배너
+// 평가 창(제출 기간) 배너 — 평가 폼·평가자 홈 상단에 표시
 function renderSubmissionWindowBanner(periodId) {
   const st = getEvalWindowStatus(periodId);
   if (st === "always") return "";
@@ -1181,6 +1188,7 @@ function renderSubmissionWindowBanner(periodId) {
   }
   return "";
 }
+// 사람이 읽기 좋은 시간대 라벨
 function fmtDateTime(iso) {
   if (!iso) return "";
   const d = new Date(iso);
@@ -1590,10 +1598,15 @@ let session = {
   evaluatorRound: null,
   evaluatorName: null,
   isAdmin: false,
-  view: "home",       // home | eval-login | eval-home | eval-form | eval-view | admin-login | admin-home
+  view: "home",       // home(로그인 또는 메뉴) | self-eval | force-changepw | eval-home | eval-form | ...
   selectedEmp: null,
-  adminTab: "results", // results | dept | accounts | data | periods | compare | security
-  viewPeriod: null    // 결과 조회에서 사용자가 선택한 반기 (null 이면 활성 반기)
+  adminTab: "results", // results | dept | accounts | data | periods | compare | security | selfstatus
+  viewPeriod: null,   // 결과 조회에서 사용자가 선택한 반기 (null 이면 활성 반기)
+  // 통합 로그인 identity
+  userName: null,     // 로그인한 사람 이름
+  userDept: null,     // 직원 명단상의 소속 (평가자 전용 계정은 null 가능)
+  userRank: null,
+  mustChangePw: false // 초기 비밀번호로 로그인 → 강제 변경
 };
 
 // 로그인 상태 지속: 한 번 로그인하면 로그아웃 전까지 브라우저 새로고침/재방문에도 유지
@@ -1604,7 +1617,11 @@ function saveSession() {
       evaluatorRound: session.evaluatorRound,
       evaluatorName: session.evaluatorName,
       isAdmin: session.isAdmin,
-      adminTab: session.adminTab
+      adminTab: session.adminTab,
+      userName: session.userName,
+      userDept: session.userDept,
+      userRank: session.userRank,
+      mustChangePw: session.mustChangePw
     };
     localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(persisted));
   } catch (e) { /* localStorage 사용 불가 환경 무시 */ }
@@ -1620,8 +1637,114 @@ function loadSession() {
       session.evaluatorName = p.evaluatorName || null;
       session.isAdmin = !!p.isAdmin;
       if (p.adminTab) session.adminTab = p.adminTab;
+      session.userName = p.userName || null;
+      session.userDept = p.userDept || null;
+      session.userRank = p.userRank || null;
+      session.mustChangePw = !!p.mustChangePw;
     }
   } catch (e) { /* 파싱 실패 시 무시 */ }
+}
+
+/* ==== 통합 로그인 / 개인 식별 ==== */
+// 자기평가 초기 비밀번호 (첫 로그인 시 강제 변경)
+const DEFAULT_EMP_PW = "hy2026!";
+// 관리자 대시보드 접근 권한을 가진 이름
+const ADMIN_NAMES = new Set(["강유석", "양정일"]);
+// 자기평가 미실시 직급 (상무 이상)
+const NO_SELF_EVAL_RANKS = new Set(["상무", "전무", "부사장", "대표이사", "회장"]);
+// 자기평가 저장용 라운드 키
+const SELF_ROUND = "자기";
+
+// 비밀번호 비교 (시트가 숫자로 저장해 앞자리 0 이 사라진 경우도 허용)
+function pwMatches(input, stored) {
+  const a = String(input == null ? "" : input).trim();
+  const b = String(stored == null ? "" : stored).trim();
+  if (!b) return false;
+  if (a === b) return true;
+  return /^\d+$/.test(a) && /^\d+$/.test(b) && String(Number(a)) === String(Number(b));
+}
+
+// 로그인한 사람의 직원 레코드
+function getCurrentEmployee() {
+  if (!session.userName) return null;
+  return EMPLOYEES.find(e => e.name === session.userName) || null;
+}
+// 자기평가 대상 여부 (수습·상무 이상 제외)
+function canSelfEvaluate(emp, period) {
+  if (!emp) return false;
+  if (NO_SELF_EVAL_RANKS.has(emp.rank)) return false;
+  if (isProbationExempt(emp, period || getActivePeriod() || resolveEvalPeriod())) return false;
+  return true;
+}
+// 대상자의 자기평가 레코드 (제출 완료된 것만 유효로 취급)
+function getSelfEvaluation(dept, name, period) {
+  return getEvaluation(dept, name, SELF_ROUND, period);
+}
+function hasSubmittedSelfEval(dept, name, period) {
+  const ev = getSelfEvaluation(dept, name, period);
+  return isEvalSubmitted(ev);
+}
+
+// 이름 + 비밀번호로 인증
+//  · 평가자 계정이 있으면 평가자 비밀번호 우선
+//  · 없으면 직원 개인 비밀번호(pw)
+//  · 수습자는 로그인 차단
+function authenticateUser(name, pw) {
+  const raw = String(name || "").trim();
+  const pwStr = String(pw || "").trim();
+  if (!raw) return { ok: false, err: "이름을 입력해 주세요." };
+  if (!pwStr) return { ok: false, err: "비밀번호를 입력해 주세요." };
+
+  const evs = getEvaluators();
+  const roles = [];
+  Object.entries(evs).forEach(([dept, rounds]) => {
+    Object.entries(rounds).forEach(([round, info]) => {
+      if (info && info.name === raw) roles.push({ dept, round, info });
+    });
+  });
+  const emp = EMPLOYEES.find(e => e.name === raw) || null;
+  const period = getActivePeriod() || resolveEvalPeriod();
+
+  // 수습 대상자는 로그인 차단 (평가자 역할도 없는 경우)
+  if (emp && isProbationExempt(emp, period) && !roles.length) {
+    return { ok: false, err: "수습 기간 중에는 시스템을 이용할 수 없습니다. 인사팀에 문의해 주세요." };
+  }
+  if (!roles.length && !emp) {
+    return { ok: false, err: "등록되지 않은 이름입니다. 이름을 다시 확인해 주세요." };
+  }
+  // 평가자 비밀번호 우선
+  if (roles.length) {
+    if (!roles.some(r => pwMatches(pwStr, r.info.password))) {
+      return { ok: false, err: "비밀번호가 일치하지 않습니다." };
+    }
+    return { ok: true, emp, roles, mustChangePw: false };
+  }
+  // 직원 개인 비밀번호
+  if (!pwMatches(pwStr, emp.pw)) {
+    return { ok: false, err: "비밀번호가 일치하지 않습니다." };
+  }
+  return { ok: true, emp, roles: [], mustChangePw: pwStr === DEFAULT_EMP_PW };
+}
+
+function isAdminUser() {
+  if (session.isAdmin) return true;
+  return !!(session.userName && ADMIN_NAMES.has(session.userName));
+}
+function logoutUser() {
+  session.userName = null;
+  session.userDept = null;
+  session.userRank = null;
+  session.mustChangePw = false;
+  session.isAdmin = false;
+  session.evaluatorDept = null;
+  session.evaluatorRound = null;
+  session.evaluatorName = null;
+  session.selectedEmp = null;
+  session.selectedEmpDept = null;
+  session.selectedRound = null;
+  session.virtualRoleKey = null;
+  clearSession();
+  go("home");
 }
 function clearSession() {
   try { localStorage.removeItem(SESSION_STORAGE_KEY); } catch (e) {}
@@ -1657,13 +1780,11 @@ function renderTopActions() {
   if (IS_REMOTE()) {
     buttons.push(`<button class="ghost" onclick="manualRefresh()" title="서버에서 최신 데이터 다시 불러오기">↻ 새로고침</button>`);
   }
-  if (session.view !== "home") {
+  if (session.view !== "home" && session.userName) {
     buttons.push(`<button class="ghost" onclick="go('home')">홈</button>`);
   }
-  if (session.isAdmin) {
-    buttons.push(`<button class="ghost" onclick="logoutAdmin()">관리자 로그아웃</button>`);
-  } else if (session.evaluatorDept) {
-    buttons.push(`<button class="ghost" onclick="logoutEvaluator()">평가자 로그아웃</button>`);
+  if (session.userName) {
+    buttons.push(`<button class="ghost" onclick="logoutUser()">로그아웃</button>`);
   }
   el.innerHTML = buttons.join(" ");
 }
@@ -1706,11 +1827,20 @@ function render() {
   if (v === "adj-admin") return renderAdjustmentAdmin();
   if (v === "eval-picker") return renderEvalPicker();
   if (v === "eval-changepw") return renderEvalChangePw();
+  if (v === "self-eval") return renderSelfEvalForm();
+  if (v === "force-changepw") return renderForceChangePw();
   renderHome();
 }
 
-/* --- 홈 --- */
+/* --- 홈: 로그인 안 했으면 로그인 화면, 했으면 개인 메뉴 --- */
 function renderHome() {
+  if (!session.userName) return renderUnifiedLogin();
+  if (session.mustChangePw) return go("force-changepw");
+  return renderUserHome();
+}
+
+/* --- 통합 로그인 (이름 + 비밀번호) --- */
+function renderUnifiedLogin() {
   $app().innerHTML = `
     <div class="hero">
       <div class="title-row">
@@ -1723,52 +1853,141 @@ function renderHome() {
         </span>
         <h1>인사평가 시스템</h1>
       </div>
-      <div class="hero-sub">${esc(periodLabel(getActivePeriod()))} 업무수행 평가 · 진행 중</div>
+      <div class="hero-sub">${esc(periodLabel(getActivePeriod()))} 업무수행 평가</div>
     </div>
+    <div class="card" style="max-width:420px;margin:10px auto 40px">
+      <h2 style="margin:0 0 6px">로그인</h2>
+      <div class="notice info" style="margin-bottom:14px">
+        본인 <b>이름</b>과 <b>비밀번호</b>를 입력해 주세요.<br>
+        <span class="mini">처음 접속하시는 분은 안내 메일의 초기 비밀번호를 사용하세요.</span>
+      </div>
+      <div id="login-err"></div>
+      <div style="margin-bottom:10px">
+        <label>이름</label>
+        <input id="uni-name" type="text" autocomplete="username" placeholder="예: 이용석"/>
+      </div>
+      <div style="margin-bottom:14px">
+        <label>비밀번호</label>
+        <input id="uni-pw" type="password" autocomplete="current-password" placeholder="비밀번호"/>
+      </div>
+      <button style="width:100%" onclick="tryUnifiedLogin()">로그인</button>
+    </div>
+  `;
+  const nameEl = document.getElementById("uni-name");
+  const pwEl = document.getElementById("uni-pw");
+  setTimeout(() => nameEl && nameEl.focus(), 50);
+  [nameEl, pwEl].forEach(el => el && el.addEventListener("keydown", e => {
+    if (e.key === "Enter") tryUnifiedLogin();
+  }));
+}
 
-    <div class="landing-wrap">
+function tryUnifiedLogin() {
+  const name = document.getElementById("uni-name").value;
+  const pw = document.getElementById("uni-pw").value;
+  const errEl = document.getElementById("login-err");
+  const res = authenticateUser(name, pw);
+  if (!res.ok) {
+    errEl.innerHTML = `<div class="notice err">${esc(res.err)}</div>`;
+    return;
+  }
+  const raw = String(name).trim();
+  session.userName = raw;
+  session.userDept = res.emp ? res.emp.dept : (res.roles[0] ? res.roles[0].dept : null);
+  session.userRank = res.emp ? res.emp.rank : (res.roles[0] ? res.roles[0].info.title : null);
+  session.mustChangePw = !!res.mustChangePw;
+  // 관리자 권한
+  if (ADMIN_NAMES.has(raw) || res.roles.some(r => r.dept === "임원" && r.round === "4차")) {
+    session.isAdmin = true;
+  }
+  saveSession();
+  if (session.mustChangePw) return go("force-changepw");
+  go("home");
+}
+
+/* --- 로그인 후 개인 메뉴 --- */
+function renderUserHome() {
+  const emp = getCurrentEmployee();
+  const period = getActivePeriod() || resolveEvalPeriod();
+  const roles = findMyEvaluatorAccounts(session.userName);
+  const showSelf = canSelfEvaluate(emp, period);
+  const showEval = roles.length > 0;
+  const showAdmin = isAdminUser();
+  const selfDone = showSelf && hasSubmittedSelfEval(emp.dept, emp.name, period);
+
+  const cards = [];
+  if (showSelf) {
+    cards.push(`
       <div class="choice-card c-eval" role="button" tabindex="0"
-           onclick="startEvaluatorFlow('list')"
-           onkeydown="if(event.key==='Enter')startEvaluatorFlow('list')">
+           onclick="go('self-eval')" onkeydown="if(event.key==='Enter')go('self-eval')">
         <span class="icon-wrap">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
-            <circle cx="9" cy="7" r="4"/>
-            <path d="M17 11l4 4"/>
-            <path d="M20.5 7.5a2.1 2.1 0 0 1 3 3L17 17l-4 1 1-4 6.5-6.5z"/>
+            <path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/>
+          </svg>
+        </span>
+        <h3>자기평가</h3>
+        <p>${selfDone ? '<span style="color:var(--success);font-weight:700">제출 완료</span> · 수정 가능' : '본인 평가 작성 (미제출)'}</p>
+      </div>`);
+  }
+  if (showEval) {
+    cards.push(`
+      <div class="choice-card c-view" role="button" tabindex="0"
+           onclick="startEvaluatorFlow('list')" onkeydown="if(event.key==='Enter')startEvaluatorFlow('list')">
+        <span class="icon-wrap">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>
+            <path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
           </svg>
         </span>
         <h3>평가하기</h3>
-        <p>부서원 평가 진행</p>
-      </div>
-
+        <p>부서원 · 임원 평가 진행</p>
+      </div>`);
+    cards.push(`
       <div class="choice-card c-view" role="button" tabindex="0"
-           onclick="startEvaluatorFlow('view')"
-           onkeydown="if(event.key==='Enter')startEvaluatorFlow('view')">
+           onclick="startEvaluatorFlow('view')" onkeydown="if(event.key==='Enter')startEvaluatorFlow('view')">
         <span class="icon-wrap">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M3 3v17a1 1 0 0 0 1 1h17"/>
-            <path d="M7 14l4-4 4 4 6-6"/>
-            <path d="M15 8h6v6"/>
+            <path d="M3 3v17a1 1 0 0 0 1 1h17"/><path d="M7 14l4-4 4 4 6-6"/><path d="M15 8h6v6"/>
           </svg>
         </span>
-        <h3>평가자 결과보기</h3>
-        <p>본인 부서 결과 열람</p>
-      </div>
-
+        <h3>평가 결과 보기</h3>
+        <p>담당 대상자 결과 열람</p>
+      </div>`);
+  }
+  if (showAdmin) {
+    cards.push(`
       <div class="choice-card c-admin" role="button" tabindex="0"
-           onclick="enterAdmin()"
-           onkeydown="if(event.key==='Enter')enterAdmin()">
+           onclick="go('admin-home')" onkeydown="if(event.key==='Enter')go('admin-home')">
         <span class="icon-wrap">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
-            <circle cx="9" cy="7" r="4"/>
-            <path d="M18 7l3 1.5v3c0 2.5-1.5 4.5-3 5-1.5-.5-3-2.5-3-5v-3L18 7z"/>
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
           </svg>
         </span>
-        <h3>관리자</h3>
-        <p>전체 결과 및 계정 관리</p>
+        <h3>관리자 대시보드</h3>
+        <p>전체 결과 · 설정 관리</p>
+      </div>`);
+  }
+  if (!cards.length) {
+    cards.push(`<div class="notice warn">현재 이용 가능한 메뉴가 없습니다. 인사팀에 문의해 주세요.</div>`);
+  }
+
+  $app().innerHTML = `
+    <div class="hero">
+      <div class="title-row">
+        <span class="brand-badge" aria-hidden="true">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="5" y="4" width="14" height="17" rx="2"/>
+            <path d="M9 4V3a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v1"/>
+            <path d="M8.5 13l2.2 2.2L15.5 10"/>
+          </svg>
+        </span>
+        <h1>인사평가 시스템</h1>
       </div>
+      <div class="hero-sub">${esc(periodLabel(getActivePeriod()))} · ${esc(session.userName)}${session.userRank ? " " + esc(session.userRank) : ""} 님</div>
+    </div>
+    ${showSelf && !selfDone ? `<div class="notice" style="max-width:900px;margin:0 auto 14px;background:#fef3c7;border:1px solid #fbbf24;color:#78350f;padding:10px 14px;border-radius:8px;font-weight:600">📝 자기평가를 먼저 제출해 주세요. 자기평가가 완료되어야 1차·2차 평가자가 평가를 진행할 수 있습니다.</div>` : ``}
+    <div class="landing-wrap">
+      ${cards.join("")}
     </div>
 
     <div class="info-panel">
@@ -1781,23 +2000,89 @@ function renderHome() {
         안내사항
       </div>
       <ul>
+        <li><b>자기평가</b>를 먼저 제출해야 1차·2차 평가자가 해당 인원을 평가할 수 있습니다.</li>
+        <li>자기평가 하단 칸에는 <b>2026년 4월 ~ 9월 실적 및 업무 내용</b>을 기재해 주세요.</li>
         <li>평가표는 직급에 따라 자동으로 선택됩니다 (과장 이상 / 대리 이하).</li>
-        <li>일반 직원은 부서별 <b>1차 / 2차 평가자</b>가 평가합니다. 부장·이사는 별도 임원 풀로, <b>1차 (부사장) / 2차 (대표이사)</b> 가 평가합니다.</li>
         <li>평가 결과는 <b>관리자</b>와 <b>평가자</b>만 열람할 수 있습니다.</li>
       </ul>
+      <div style="text-align:right;margin-top:10px">
+        <button class="small ghost" style="color:var(--primary);border-color:var(--primary)" onclick="go('eval-changepw')">🔑 비밀번호 변경</button>
+        <button class="small secondary" onclick="logoutUser()">로그아웃</button>
+      </div>
     </div>
   `;
+  // 홈 진입 시 공지 팝업 (관리자가 반기 관리에서 설정한 문구가 있으면 표시)
   maybeShowAnnouncementPopup();
+}
+
+/* --- 최초 로그인 시 강제 비밀번호 변경 --- */
+function renderForceChangePw() {
+  if (!session.userName) return go("home");
+  $app().innerHTML = `
+    <div class="card" style="max-width:480px;margin:40px auto">
+      <h2 style="margin:0 0 4px">🔐 비밀번호 변경이 필요합니다</h2>
+      <div class="mini" style="margin-bottom:14px">${esc(session.userName)}${session.userRank ? " " + esc(session.userRank) : ""} 님</div>
+      <div class="notice" style="background:#fef3c7;border:1px solid #fbbf24;color:#78350f;margin-bottom:14px">
+        초기 비밀번호로 로그인하셨습니다. 보안을 위해 <b>본인만 아는 비밀번호로 변경</b>한 뒤 이용해 주세요.
+      </div>
+      <div id="fpw-err"></div>
+      <div style="margin-bottom:10px">
+        <label>새 비밀번호 (4자 이상)</label>
+        <input id="fpw-new" type="password" autocomplete="new-password" placeholder="새 비밀번호"/>
+      </div>
+      <div style="margin-bottom:14px">
+        <label>새 비밀번호 확인</label>
+        <input id="fpw-new2" type="password" autocomplete="new-password" placeholder="새 비밀번호 확인"/>
+      </div>
+      <div class="flex between">
+        <button class="secondary" onclick="logoutUser()">로그아웃</button>
+        <button onclick="submitForceChangePw()">변경하고 계속</button>
+      </div>
+    </div>
+  `;
+  setTimeout(() => { const el = document.getElementById("fpw-new"); if (el) el.focus(); }, 50);
+}
+
+async function submitForceChangePw() {
+  const np1 = (document.getElementById("fpw-new").value || "").trim();
+  const np2 = (document.getElementById("fpw-new2").value || "").trim();
+  const err = document.getElementById("fpw-err");
+  const showErr = (m) => { err.innerHTML = `<div class="notice err">${esc(m)}</div>`; };
+  if (!np1 || np1.length < 4) return showErr("새 비밀번호는 4자 이상이어야 합니다.");
+  if (np1 !== np2) return showErr("새 비밀번호 확인이 일치하지 않습니다.");
+  if (np1 === DEFAULT_EMP_PW) return showErr("초기 비밀번호와 다른 값으로 설정해 주세요.");
+  const emp = getCurrentEmployee();
+  if (!emp) return showErr("직원 정보를 찾을 수 없습니다. 인사팀에 문의해 주세요.");
+  const btn = document.querySelector('button[onclick="submitForceChangePw()"]');
+  if (btn) { btn.disabled = true; btn.textContent = "저장 중…"; }
+  try {
+    if (IS_REMOTE()) {
+      await remotePost("setEmployeePw", { dept: emp.dept, name: emp.name, pw: np1 });
+    }
+    // 로컬 캐시 반영
+    emp.pw = np1;
+    const cached = (_cache.employees || []).find(e => e.dept === emp.dept && e.name === emp.name);
+    if (cached) cached.pw = np1;
+    session.mustChangePw = false;
+    saveSession();
+    alert("비밀번호가 변경되었습니다.");
+    go("home");
+  } catch (e) {
+    showErr("저장 실패: " + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = "변경하고 계속"; }
+  }
 }
 
 // 공지 팝업 렌더 · 24시간 억제(오늘 다시 보지 않기)
 function maybeShowAnnouncementPopup() {
   const a = getAnnouncement();
   if (!a.title && !a.body) return;
+  // 24시간 억제 확인
   try {
     const until = Number(localStorage.getItem("hy_announce_dismiss_until") || 0);
     if (until && Date.now() < until) return;
   } catch(e) {}
+  // 이미 열려있으면 중복 렌더 방지
   if (document.getElementById("announce-overlay")) return;
   const overlay = document.createElement("div");
   overlay.id = "announce-overlay";
@@ -1834,12 +2119,22 @@ function dismissAnnouncePopup(rememberToday) {
   }
 }
 
-// 평가자 로그인 후 이동할 탭을 미리 지정해 두고 로그인 화면으로 이동
+// 통합 로그인 후 평가자 역할로 진입 (역할이 여러 개면 선택 화면)
 function startEvaluatorFlow(targetTab) {
   session.postLoginTab = targetTab;
-  // 이미 평가자로 로그인된 상태면
-  //  - 본인 이름으로 등록된 평가자 계정이 여러 개면 어떤 역할로 진입할지 선택
-  //  - 한 개면 바로 그 역할 화면으로 직행
+  const myRoles = findMyEvaluatorAccounts(session.userName);
+  if (!myRoles.length) {
+    alert("평가자 권한이 없습니다.");
+    return go("home");
+  }
+  if (myRoles.length > 1) return go("eval-picker");
+  const only = myRoles[0];
+  return switchEvalRole(only.dept, only.round, only.virtualKey);
+}
+
+// (구) 평가자 세션 기반 진입 — 호환용
+function startEvaluatorFlowLegacy(targetTab) {
+  session.postLoginTab = targetTab;
   if (session.evaluatorDept && session.evaluatorRound) {
     const roles = findMyEvaluatorAccounts(session.evaluatorName);
     if (roles.length > 1) return go("eval-picker");
@@ -1852,6 +2147,7 @@ function startEvaluatorFlow(targetTab) {
 // 특정 평가자의 진입 메뉴를 가상 역할로 통합
 //   여러 (부서, 차수) 조합을 사업부 단위로 묶어 하나의 메뉴로 표시
 //   includeOverrides: 해당 가상 역할에 개인 배정(오버라이드) 대상도 포함할지 여부
+//   개인 배정 대상은 한 곳에만 노출되도록 관리자가 명시적으로 지정
 const VIRTUAL_ROLES = {
   "임웅걸": [
     {
@@ -1863,6 +2159,7 @@ const VIRTUAL_ROLES = {
         { dept: "자재관리부",   round: "2차" }
       ],
       includeOverrides: true,
+      // 대표 정보 조회용 (아무 base 중 하나)
       lookupDept: "수배전영업부", lookupRound: "2차"
     },
     {
@@ -1878,9 +2175,9 @@ const VIRTUAL_ROLES = {
   ]
 };
 
-// 로그인된 평가자 이름으로 접근 가능한 역할 조회
-//  · VIRTUAL_ROLES 정의된 이름이면 가상 역할 목록 반환
-//  · 그 외에는 evs 시트의 (부서, 차수) 반환
+// 로그인된 평가자 이름 (예: "강유석 부장")으로 접근 가능한 역할 조회
+//  · VIRTUAL_ROLES 에 정의된 이름이면 가상 역할 목록 반환
+//  · 그 외에는 evs 시트에 등록된 모든 (부서, 차수) 반환
 function findMyEvaluatorAccounts(evaluatorName) {
   const raw = String(evaluatorName || "").split(" ")[0].trim();
   if (!raw) return [];
@@ -1919,13 +2216,14 @@ function switchEvalRole(dept, round, virtualKey) {
   session.evaluatorRound = round;
   session.evaluatorName = `${info.name} ${info.title}`;
   session.virtualRoleKey = virtualKey || null;
+  // 임원 4차(대표이사)는 관리자 권한도 유지
   if (dept === "임원" && round === "4차") session.isAdmin = true;
   saveSession();
   if (dept === "인사/안전/교육") return go("adj-admin");
   return go("eval-home");
 }
 
-// 세션의 현재 가상 역할 정의 반환
+// 세션의 현재 가상 역할 정의를 반환 (없으면 null)
 function getCurrentVirtualRole() {
   if (!session.virtualRoleKey) return null;
   const raw = String(session.evaluatorName || "").split(" ")[0].trim();
@@ -1935,9 +2233,10 @@ function getCurrentVirtualRole() {
 
 // 로그인된 사람이 여러 역할을 겸임할 때 표시할 진입 선택 화면
 function renderEvalPicker() {
-  const roles = findMyEvaluatorAccounts(session.evaluatorName);
-  if (!roles.length) return go("eval-login");
+  const roles = findMyEvaluatorAccounts(session.userName || session.evaluatorName);
+  if (!roles.length) return go("home");
   if (roles.length === 1) {
+    // 단일 계정이면 곧바로 해당 화면으로
     const r = roles[0];
     return switchEvalRole(r.dept, r.round, r.virtualKey);
   }
@@ -1984,8 +2283,8 @@ function renderEvalPicker() {
 
 // 관리자 카드 클릭 시: 이미 관리자로 로그인된 상태면 대시보드로, 아니면 로그인 화면으로
 function enterAdmin() {
-  if (session.isAdmin) go("admin-home");
-  else go("admin-login");
+  if (isAdminUser()) go("admin-home");
+  else go("home");
 }
 
 /* --- 평가자 로그인 --- */
@@ -2036,6 +2335,7 @@ function renderEvalLogin() {
           opts.push(`<option value="${esc(k)}">${esc(info.name)} ${esc(info.title)}</option>`);
         }
       });
+      // 순서에 없는 기타 키
       Object.keys(r).forEach(k => {
         if (!execOrder.includes(k)) {
           const info = r[k];
@@ -2127,18 +2427,19 @@ function logoutEvaluator() {
   go("home");
 }
 
-/* --- 평가자 본인 비밀번호 변경 --- */
+/* --- 본인 비밀번호 변경 (평가자 계정 우선, 없으면 직원 개인 계정) --- */
 function renderEvalChangePw() {
-  if (!session.evaluatorDept || !session.evaluatorRound) return go("eval-login");
-  const dept = session.evaluatorDept;
-  const round = session.evaluatorRound;
-  const evs = getEvaluators();
-  const info = (evs[dept] || {})[round];
-  const displayName = info ? `${info.name} ${info.title}` : (session.evaluatorName || "");
+  if (!session.userName) return go("home");
+  const myRoles = findMyEvaluatorAccounts(session.userName);
+  const isEvaluatorPw = myRoles.length > 0;
+  const emp = getCurrentEmployee();
+  const subtitle = isEvaluatorPw
+    ? `평가자 계정 · ${esc(session.userName)}${session.userRank ? " " + esc(session.userRank) : ""}`
+    : `${esc(emp ? emp.dept : "")} · ${esc(session.userName)}${emp ? " " + esc(emp.rank) : ""}`;
   $app().innerHTML = `
     <div class="card" style="max-width:520px;margin:40px auto">
       <h2 style="margin:0 0 4px">🔑 비밀번호 변경</h2>
-      <div class="mini" style="margin-bottom:14px">${esc(dept)} · ${esc(displayRound(round))} 평가자 · ${esc(displayName)}</div>
+      <div class="mini" style="margin-bottom:14px">${subtitle}</div>
       <div class="notice info" style="margin-bottom:14px">
         본인 계정의 로그인 비밀번호를 변경합니다. 저장 즉시 반영되며 다음 로그인부터 새 비밀번호를 사용하세요.
       </div>
@@ -2156,7 +2457,7 @@ function renderEvalChangePw() {
         <input id="evpw-new2" type="password" autocomplete="new-password" placeholder="새 비밀번호 확인"/>
       </div>
       <div class="flex" style="gap:8px;justify-content:flex-end">
-        <button class="secondary" onclick="go('eval-home')">취소</button>
+        <button class="secondary" onclick="go('home')">취소</button>
         <button onclick="submitEvalChangePw()">비밀번호 변경</button>
       </div>
     </div>
@@ -2165,40 +2466,266 @@ function renderEvalChangePw() {
 }
 
 async function submitEvalChangePw() {
-  const dept = session.evaluatorDept;
-  const round = session.evaluatorRound;
   const cur = (document.getElementById("evpw-cur").value || "").trim();
   const np1 = (document.getElementById("evpw-new").value || "").trim();
   const np2 = (document.getElementById("evpw-new2").value || "").trim();
   const err = document.getElementById("evpw-err");
   const showErr = (msg) => { err.innerHTML = `<div class="notice err">${esc(msg)}</div>`; };
-  const evs = getEvaluators();
-  const info = (evs[dept] || {})[round];
-  if (!info) return showErr("계정 정보를 찾을 수 없습니다. 다시 로그인해 주세요.");
+  const myRoles = findMyEvaluatorAccounts(session.userName);
+  const emp = getCurrentEmployee();
+  if (!myRoles.length && !emp) return showErr("계정 정보를 찾을 수 없습니다. 다시 로그인해 주세요.");
   if (!cur) return showErr("현재 비밀번호를 입력해 주세요.");
-  if (String(info.password) !== String(cur)) return showErr("현재 비밀번호가 일치하지 않습니다.");
+  // 현재 비밀번호 검증 (평가자 계정 우선)
+  const curOk = myRoles.length
+    ? myRoles.some(r => pwMatches(cur, r.info.password))
+    : pwMatches(cur, emp.pw);
+  if (!curOk) return showErr("현재 비밀번호가 일치하지 않습니다.");
   if (!np1 || np1.length < 4) return showErr("새 비밀번호는 4자 이상이어야 합니다.");
   if (np1 !== np2) return showErr("새 비밀번호 확인이 일치하지 않습니다.");
   if (np1 === cur) return showErr("현재 비밀번호와 동일합니다. 다른 비밀번호를 입력해 주세요.");
   const btn = document.querySelector('button[onclick="submitEvalChangePw()"]');
   if (btn) { btn.disabled = true; btn.textContent = "저장 중…"; }
   try {
-    if (IS_REMOTE()) {
-      await remotePost("updateEvaluator", { dept, round, fields: { password: np1 } });
+    if (myRoles.length) {
+      // 평가자 계정: 본인 이름으로 등록된 모든 (부서, 차수) 비밀번호를 함께 변경
+      for (const r of myRoles) {
+        if (IS_REMOTE()) {
+          await remotePost("updateEvaluator", { dept: r.dept, round: r.round, fields: { password: np1 } });
+        }
+        const evs = getEvaluators();
+        if (evs[r.dept] && evs[r.dept][r.round]) evs[r.dept][r.round].password = np1;
+      }
+    } else {
+      if (IS_REMOTE()) {
+        await remotePost("setEmployeePw", { dept: emp.dept, name: emp.name, pw: np1 });
+      }
+      emp.pw = np1;
+      const cached = (_cache.employees || []).find(e => e.dept === emp.dept && e.name === emp.name);
+      if (cached) cached.pw = np1;
     }
-    // 로컬 캐시에도 반영
-    info.password = np1;
+    session.mustChangePw = false;
+    saveSession();
     err.innerHTML = `<div class="notice info" style="background:#dcfce7;color:#166534;border:1px solid #86efac">✅ 비밀번호가 변경되었습니다. 다음 로그인부터 새 비밀번호를 사용해 주세요.</div>`;
-    setTimeout(() => { go("eval-home"); }, 1500);
+    setTimeout(() => { go("home"); }, 1500);
   } catch (e) {
     showErr("저장 실패: " + e.message);
     if (btn) { btn.disabled = false; btn.textContent = "비밀번호 변경"; }
   }
 }
 
+/* ==== 자기평가 ==== */
+// 자기평가 폼: A~E 등급만 노출, 배점·소계·총점은 숨김
+function renderSelfEvalForm() {
+  if (!session.userName) return go("home");
+  const emp = getCurrentEmployee();
+  const period = getActivePeriod() || resolveEvalPeriod();
+  if (!canSelfEvaluate(emp, period)) {
+    $app().innerHTML = `<div class="card" style="max-width:520px;margin:40px auto">
+      <div class="notice warn">자기평가 대상이 아닙니다.</div>
+      <div style="text-align:right;margin-top:12px"><button class="secondary" onclick="go('home')">← 홈</button></div>
+    </div>`;
+    return;
+  }
+  const form = getFormForEmp(period, emp);
+  const existing = getEvaluation(emp.dept, emp.name, SELF_ROUND, period);
+  const submitted = isEvalSubmitted(existing);
+  const closed = isPeriodClosed(period) && !session.isAdmin;
+  $app().innerHTML = `
+    <div class="card">
+      <div class="flex between">
+        <div>
+          <h2 style="margin:0">자기평가 · ${esc(form.title)}</h2>
+          <div class="mini">${esc(emp.dept)} · ${esc(emp.name)} ${esc(emp.rank)} · <b>${esc(periodLabel(period))}</b></div>
+        </div>
+        <div class="flex" style="gap:8px">
+          <span class="period-badge">🗓 ${esc(periodLabel(period))}</span>
+          <button class="secondary small" onclick="go('home')">← 홈</button>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      ${existing ? `<div class="notice info">이미 ${submitted ? "<b>제출 완료된 자기평가</b>" : "<b>임시저장된 자기평가</b>"}가 있습니다. 수정 후 다시 저장하면 갱신됩니다.</div>` : ""}
+      <div class="notice" style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:12px;padding:10px 12px;background:#f5f7fb;border:1px solid #dbe4f2;border-radius:8px;font-size:12px;color:#333">
+        <span><b>A</b> 매우우수</span><span><b>B</b> 우수</span><span><b>C</b> 보통</span><span><b>D</b> 미흡</span><span><b>E</b> 매우미흡</span>
+        <span style="color:var(--muted)">각 문항에 해당하는 등급을 선택해 주세요.</span>
+      </div>
+      <div id="form-err"></div>
+      <form id="eval-form" onsubmit="event.preventDefault();submitSelfEval('submit');">
+        <table class="eval-table">
+          <thead>
+            <tr>
+              <th style="width:90px">평가영역</th>
+              <th style="width:170px">평가 항목</th>
+              <th>세부 문항</th>
+              <th style="width:280px;text-align:center">A 매우우수 · B 우수 · C 보통 · D 미흡 · E 매우미흡</th>
+            </tr>
+          </thead>
+          <tbody>${renderFormItems(form, existing, true)}</tbody>
+        </table>
+        <div style="margin-top:20px">
+          <label>2026년 4월 ~ 9월 실적 및 업무 내용 <span style="color:var(--danger)">*</span></label>
+          <div class="mini" style="margin-bottom:6px;color:var(--muted)">담당했던 주요 업무, 달성한 실적, 개선 사항 등을 구체적으로 작성해 주세요.</div>
+          <textarea id="comment" rows="8" placeholder="예)&#10;· 4월: OO 프로젝트 설계 도면 12건 작성, 납기 100% 준수&#10;· 6월: 자재 발주 프로세스 개선으로 리드타임 3일 단축&#10;· 8월: 품질 부적합 건수 전년 대비 20% 감소">${esc(existing ? existing.comment : "")}</textarea>
+        </div>
+        <div class="flex between" style="margin-top:20px">
+          <button class="secondary" type="button" onclick="go('home')">취소</button>
+          <div class="flex" style="gap:8px">
+            <button id="btn-eval-draft" class="secondary" type="button" onclick="submitSelfEval('draft')" ${closed ? "disabled" : ""} title="작성 중인 내용을 임시로 저장">💾 임시저장</button>
+            <button id="btn-eval-submit" type="submit" ${closed ? "disabled" : ""}>📤 ${submitted ? "수정 제출" : "제출"}</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  `;
+  attachFormHandlers(form);
+  recalcTotal();
+}
+
+// 자기평가 저장 (제출 시 전 문항 필수 + 실적 내용 필수)
+async function submitSelfEval(mode) {
+  mode = (mode === "draft") ? "draft" : "submit";
+  const emp = getCurrentEmployee();
+  const period = getActivePeriod() || resolveEvalPeriod();
+  const form = getFormForEmp(period, emp);
+  const errEl = document.getElementById("form-err");
+  const showErr = (msg) => {
+    errEl.innerHTML = `<div class="notice err">${msg}</div>`;
+    window.scrollTo({top:0, behavior:"smooth"});
+  };
+  if (isPeriodClosed(period) && !session.isAdmin) {
+    return showErr("현재 반기가 마감된 상태입니다. 관리자에게 문의해 주세요.");
+  }
+  const scores = {};
+  const missing = [];
+  form.areas.forEach(area => area.items.forEach(item => {
+    if (item.subItems && item.subItems.length) {
+      item.subItems.forEach((sub, subIdx) => {
+        const key = `${item.id}#${subIdx}`;
+        const cell = document.getElementById(`score-${key}`);
+        const v = parseFloat(cell.textContent);
+        if (isNaN(v)) missing.push(`${item.name} / ${sub.name}`);
+        else scores[key] = v;
+      });
+    } else {
+      const cell = document.getElementById(`score-${item.id}`);
+      const v = parseFloat(cell.textContent);
+      if (isNaN(v)) missing.push(item.name);
+      else scores[item.id] = v;
+    }
+  }));
+  const comment = (document.getElementById("comment") || {}).value || "";
+  if (mode === "submit") {
+    if (missing.length) return showErr(`모든 문항의 등급을 선택해 주세요. 미선택: ${missing.map(esc).join(", ")}`);
+    if (!comment.trim()) return showErr("2026년 4월 ~ 9월 실적 및 업무 내용을 입력해 주세요.");
+  }
+  const totalRaw = Object.values(scores).reduce((a,b)=>a+b,0);
+  const total = Math.round(totalRaw * 10) / 10;
+  const ev = {
+    dept: emp.dept, empName: emp.name, empRank: emp.rank, rankCategory: emp.rankCategory,
+    round: SELF_ROUND,
+    period,
+    evaluatorName: `${emp.name} ${emp.rank} (본인)`,
+    scores, total, comment,
+    submittedAt: mode === "submit" ? new Date().toISOString() : ""
+  };
+  const btnSubmit = document.getElementById("btn-eval-submit");
+  const btnDraft  = document.getElementById("btn-eval-draft");
+  const activeBtn = mode === "submit" ? btnSubmit : btnDraft;
+  const orig = activeBtn ? activeBtn.innerHTML : "";
+  if (btnSubmit) btnSubmit.disabled = true;
+  if (btnDraft)  btnDraft.disabled  = true;
+  if (activeBtn) activeBtn.innerHTML = mode === "submit" ? "제출 중…" : "임시저장 중…";
+  try {
+    await upsertEvaluation(ev);
+    alert(mode === "submit"
+      ? "자기평가가 제출되었습니다. 이제 1차·2차 평가자가 평가를 진행할 수 있습니다."
+      : "자기평가가 임시저장되었습니다. 이어서 작성할 수 있어요.");
+    go("home");
+  } catch (e) {
+    showErr(`서버 저장 실패: ${esc(e.message)}. 네트워크 상태를 확인해 주세요.`);
+    if (btnSubmit) btnSubmit.disabled = false;
+    if (btnDraft)  btnDraft.disabled  = false;
+    if (activeBtn) activeBtn.innerHTML = orig;
+  }
+}
+
+// 1·2차 평가자용 자기평가 참고 패널 (전문 표시)
+function renderSelfEvalReference(dept, name, period) {
+  const ev = getSelfEvaluation(dept, name, period);
+  if (!ev) return "";
+  const emp = EMPLOYEES.find(e => e.dept === dept && e.name === name);
+  const form = getFormForEmp(period, emp);
+  const rows = [];
+  (form.areas || []).forEach(area => (area.items || []).forEach(item => {
+    if (item.subItems && item.subItems.length) {
+      item.subItems.forEach((sub, subIdx) => {
+        const key = `${item.id}#${subIdx}`;
+        const sc = ev.scores ? ev.scores[key] : null;
+        const grade = selfGradeLabel(sc, sub.points, form.gradeRatios);
+        rows.push(`<tr>
+          <td style="font-weight:600;white-space:nowrap">${esc(item.name)}</td>
+          <td>${esc(sub.name)}</td>
+          <td style="text-align:center;font-weight:700;color:var(--primary)">${grade}</td>
+          <td style="text-align:right">${fmtScore(sc)} / ${sub.points}</td>
+        </tr>`);
+      });
+    } else {
+      const sc = ev.scores ? ev.scores[item.id] : null;
+      rows.push(`<tr>
+        <td style="font-weight:600">${esc(item.name)}</td>
+        <td>${esc(item.desc || "")}</td>
+        <td style="text-align:center">-</td>
+        <td style="text-align:right">${fmtScore(sc)}</td>
+      </tr>`);
+    }
+  }));
+  return `
+    <div class="notice" style="background:#f0f9ff;border:1px solid #7dd3fc;border-radius:8px;padding:0;margin-bottom:14px;overflow:hidden">
+      <div onclick="toggleSelfRef()" style="cursor:pointer;padding:10px 14px;background:#e0f2fe;font-weight:700;color:#075985;display:flex;justify-content:space-between;align-items:center">
+        <span>📄 ${esc(name)} 님의 자기평가 (참고용) · 자기 총점 <b>${fmtScore(ev.total)}</b>점</span>
+        <span id="self-ref-caret">▼</span>
+      </div>
+      <div id="self-ref-body" style="display:none;padding:14px;background:#fff">
+        <div style="margin-bottom:14px">
+          <div style="font-weight:700;color:#075985;margin-bottom:6px">2026년 4월 ~ 9월 실적 및 업무 내용</div>
+          <div style="white-space:pre-wrap;background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:10px 12px;font-size:13px;line-height:1.7">${esc(ev.comment || "(미작성)")}</div>
+        </div>
+        <div style="font-weight:700;color:#075985;margin-bottom:6px">항목별 자기평가</div>
+        <div style="overflow-x:auto">
+          <table style="font-size:12px">
+            <thead><tr><th style="width:140px">항목</th><th>세부 문항</th><th style="width:60px">등급</th><th style="width:80px">점수</th></tr></thead>
+            <tbody>${rows.join("")}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+}
+function toggleSelfRef() {
+  const b = document.getElementById("self-ref-body");
+  const c = document.getElementById("self-ref-caret");
+  if (!b) return;
+  const open = b.style.display !== "none";
+  b.style.display = open ? "none" : "block";
+  if (c) c.textContent = open ? "▼" : "▲";
+}
+// 저장된 점수를 A~E 등급으로 역산
+function selfGradeLabel(score, maxPoints, ratios) {
+  if (score == null || maxPoints == null) return "-";
+  const letters = ["A","B","C","D","E"];
+  const rs = (Array.isArray(ratios) && ratios.length === 5) ? ratios : GRADE_RATIOS;
+  let best = 0, bestDiff = Infinity;
+  rs.forEach((r, i) => {
+    const v = Math.round(maxPoints * r * 10) / 10;
+    const d = Math.abs(v - Number(score));
+    if (d < bestDiff) { bestDiff = d; best = i; }
+  });
+  return letters[best];
+}
+
 /* --- 평가자 홈 --- */
 function renderEvalHome() {
-  if (!session.evaluatorDept) return go("eval-login");
+  if (!session.evaluatorDept) return go("home");
   const dept = session.evaluatorDept;
   const round = session.evaluatorRound;
   const activePeriod = getActivePeriod() || resolveEvalPeriod();
@@ -2206,6 +2733,7 @@ function renderEvalHome() {
   const targets = computeTargetsForEvaluator(dept, round, session.evaluatorName);
   const doneMap = {};
   targets.forEach(t => {
+    // 대상 카드가 저장되어 있는 라운드로 조회 (오버라이드 시 다를 수 있음)
     const ev = getEvaluation(t.dept, t.name, t._assignedRound || round, activePeriod);
     if (!ev) doneMap[t.name] = "none";
     else if (isEvalSubmitted(ev)) doneMap[t.name] = "submitted";
@@ -2285,7 +2813,12 @@ function getCurrentEvaluatorName(dept, round) {
   return evs[dept] && evs[dept][round] ? evs[dept][round].name : null;
 }
 
-// 로그인한 평가자의 대상 목록 계산 (기본 + 개인 오버라이드)
+// 로그인한 평가자의 대상 목록 계산
+//   1) 기본 대상 (부서 라운드 또는 임원 평가 타깃)
+//   2) 개인 오버라이드 반영:
+//      · 이 라운드에 대해 다른 평가자에게 배정된 대상은 제거
+//      · 이 평가자에게 배정된 대상은 추가 (다른 부서 소속도 가능)
+//   각 대상에 _assignedRound (저장 시 사용) 를 부여
 function computeTargetsForEvaluator(dept, round, evaluatorNameFull) {
   const virt = getCurrentVirtualRole();
   let baseTargets = [];
@@ -2337,6 +2870,7 @@ function renderEvalListTab(targets, doneMap) {
   const cards = targets.map(e => {
     const probation = isProbationExempt(e, activePeriod);
     if (probation) {
+      // 수습 제외: 클릭 비활성화 + 회색 카드 + 사유 배지
       return `
         <div class="emp-card probation-card" title="수습 기간으로 이번 반기 평가에서 제외됩니다">
           <div class="name">${esc(e.name)} <span class="chip rank">${esc(e.rank)}</span></div>
@@ -2352,12 +2886,32 @@ function renderEvalListTab(targets, doneMap) {
         </div>
       `;
     }
+    // 자기평가 미제출 대상은 잠금 표시
+    const needsSelf = canSelfEvaluate(e, activePeriod);
+    if (needsSelf && !hasSubmittedSelfEval(e.dept, e.name, activePeriod)) {
+      return `
+        <div class="emp-card probation-card" title="대상자의 자기평가 제출 후 평가할 수 있습니다">
+          <div class="name">${esc(e.name)} <span class="chip rank">${esc(e.rank)}</span></div>
+          ${isExec ? `<div class="mini" style="font-weight:600;color:var(--primary)">${esc(e.dept)}</div>` : ""}
+          <div class="mini">${esc(e.rankCategory)} 평가표</div>
+          <div class="meta">
+            <span>${esc(displayRound(e._assignedRound || session.evaluatorRound))} 평가</span>
+            <span class="chip probation">🔒 자기평가 대기</span>
+          </div>
+          <div class="probation-reason">
+            대상자가 자기평가를 아직 제출하지 않았습니다. 제출이 완료되면 평가를 진행할 수 있습니다.
+          </div>
+        </div>
+      `;
+    }
     const st = doneMap[e.name] || "none";
+    // 상태 → 칩 class · 라벨
     let chipCls, chipLbl;
     if (st === "submitted") { chipCls = "done";     chipLbl = "제출완료"; }
     else if (st === "draft"){ chipCls = "draft";    chipLbl = "임시저장"; }
     else                    { chipCls = "pending";  chipLbl = "미작성";   }
     const assignedRound = e._assignedRound || session.evaluatorRound;
+    // 개인 오버라이드 대상은 라운드 라벨을 붙이지 않고 "평가"로만 표시
     const roundLbl = e._override ? "평가" : `${esc(displayRound(assignedRound))} 평가`;
     return `
       <div class="emp-card" onclick="startEvalForm('${esc(e.dept)}','${esc(e.name)}','${esc(assignedRound)}')">
@@ -2385,9 +2939,14 @@ function startEvalForm(dept, name, assignedRound) {
     alert(`${name}은(는) 수습 기간으로 이번 반기 평가 대상에서 제외됩니다.`);
     return;
   }
+  // 자기평가 선행 필수: 대상자가 자기평가를 제출해야 1·2차 평가 가능
+  if (emp && canSelfEvaluate(emp, activePeriod) && !hasSubmittedSelfEval(dept, name, activePeriod) && !session.isAdmin) {
+    alert(`${name} 님이 아직 자기평가를 제출하지 않았습니다.\n\n자기평가가 제출되어야 평가를 진행할 수 있습니다.`);
+    return;
+  }
   session.selectedEmpDept = dept;
   session.selectedEmp = name;
-  session.selectedRound = assignedRound || null;
+  session.selectedRound = assignedRound || null; // 개인 오버라이드 시 저장 라운드
   go("eval-form");
 }
 
@@ -2418,6 +2977,7 @@ function renderEvalForm() {
     </div>
     <div class="card">
       ${renderSubmissionWindowBanner(activePeriod)}
+      ${renderSelfEvalReference(empDept, empName, activePeriod)}
       ${existing ? `<div class="notice info">이미 <b>${esc(periodLabel(activePeriod))}</b>에 ${isEvalSubmitted(existing) ? "<b>제출 완료된 평가</b>" : "<b>임시저장된 평가</b>"}가 있습니다. 수정 후 다시 저장하면 갱신됩니다.</div>` : ""}
       <div class="notice" style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:12px;padding:10px 12px;background:#f5f7fb;border:1px solid #dbe4f2;border-radius:8px;font-size:12px;color:#333">
         <span><b>A</b> 매우우수 · 100%</span>
@@ -2489,7 +3049,8 @@ function renderGradePills(values, sel, dataAttrs, perValueAttrs) {
   }).join("");
 }
 
-function renderFormItems(form, existing) {
+// selfMode=true 이면 배점·소계·점수 열을 숨기고 A~E 등급만 노출
+function renderFormItems(form, existing, selfMode) {
   const rows = [];
   form.areas.forEach(area => {
     // 영역 rowspan 계산: 항목의 sub-item 수 합
@@ -2512,10 +3073,10 @@ function renderFormItems(form, existing) {
           rows.push(`
             <tr>
               ${!areaRendered ? `<td class="area" rowspan="${areaRows}">${esc(area.area)}</td>` : ""}
-              ${subIdx === 0 ? `<td class="item" rowspan="${subItemRows}" style="vertical-align:middle"><div><b>${esc(item.name)}</b></div><div class="mini">${maxPts}점 · <span id="itemsum-${item.id}">-</span>/${maxPts}</div></td>` : ""}
-              <td class="desc"><b>${esc(sub.name)}</b> <span class="mini">(${sub.points}점)</span></td>
+              ${subIdx === 0 ? `<td class="item" rowspan="${subItemRows}" style="vertical-align:middle"><div><b>${esc(item.name)}</b></div>${selfMode ? "" : `<div class="mini">${maxPts}점 · <span id="itemsum-${item.id}">-</span>/${maxPts}</div>`}</td>` : ""}
+              <td class="desc"><b>${esc(sub.name)}</b>${selfMode ? "" : ` <span class="mini">(${sub.points}점)</span>`}</td>
               <td style="padding:6px 8px"><div style="display:flex;gap:6px">${pills}</div></td>
-              <td class="subtotal-cell" id="score-${key}" data-item="${item.id}" style="text-align:right;font-weight:600">${sel ?? "-"}</td>
+              <td class="subtotal-cell" id="score-${key}" data-item="${item.id}" style="text-align:right;font-weight:600${selfMode ? ";display:none" : ""}">${sel ?? "-"}</td>
             </tr>`);
           areaRendered = true;
         });
@@ -2528,10 +3089,10 @@ function renderFormItems(form, existing) {
         rows.push(`
           <tr>
             ${!areaRendered ? `<td class="area" rowspan="${areaRows}">${esc(area.area)}</td>` : ""}
-            <td class="item"><div><b>${esc(item.name)}</b></div><div class="mini">${maxPts}점</div></td>
+            <td class="item"><div><b>${esc(item.name)}</b></div>${selfMode ? "" : `<div class="mini">${maxPts}점</div>`}</td>
             <td class="desc">${esc(item.desc || "")}</td>
             <td style="padding:6px 8px"><div style="display:flex;gap:6px">${pills}</div></td>
-            <td class="subtotal-cell" id="score-${item.id}" data-item="${item.id}" style="text-align:right;font-weight:600">${sel ?? "-"}</td>
+            <td class="subtotal-cell" id="score-${item.id}" data-item="${item.id}" style="text-align:right;font-weight:600${selfMode ? ";display:none" : ""}">${sel ?? "-"}</td>
           </tr>`);
         areaRendered = true;
       }
@@ -2598,6 +3159,8 @@ function recalcTotal() {
 }
 
 // mode: "submit" (최종 제출) | "draft" (임시저장)
+//  · submit: 모든 문항 필수, submittedAt 채움 → "제출완료" 상태
+//  · draft:  미평가 문항 허용, submittedAt 비움 → "임시저장" 상태
 async function submitEval(mode) {
   mode = (mode === "draft") ? "draft" : "submit";
   // 개인 오버라이드 대상은 오버라이드에 지정된 라운드로 저장
@@ -2612,9 +3175,11 @@ async function submitEval(mode) {
     errEl.innerHTML = `<div class="notice err">${msg}</div>`;
     window.scrollTo({top:0, behavior:"smooth"});
   };
+  // 안전장치: 반기 마감(status closed)
   if (isPeriodClosed(activePeriod) && !session.isAdmin) {
     return showErr("현재 반기가 마감된 상태입니다. 관리자에게 문의해 주세요.");
   }
+  // 평가 창(제출 기간) 검증
   const winStatus = getEvalWindowStatus(activePeriod);
   if (mode === "submit" && !canSubmitEval(activePeriod)) {
     const w = getSubmissionWindow(activePeriod);
@@ -2649,6 +3214,7 @@ async function submitEval(mode) {
   if (mode === "submit" && missing.length) {
     return showErr(`모든 항목을 평가해 주세요. 미평가 항목: ${missing.map(esc).join(", ")}`);
   }
+  // 소수점 부동소수 오차 제거: 소수 첫째 자리 반올림, 정수면 그대로
   const totalRaw = Object.values(scores).reduce((a,b)=>a+b,0);
   const total = Math.round(totalRaw * 10) / 10;
   const comment = (document.getElementById("comment") || {}).value || "";
@@ -3149,9 +3715,71 @@ async function saveAdjustmentEdits() {
   }
 }
 
+/* --- 관리자: 자기평가 제출 현황 --- */
+function renderAdminSelfStatus(body) {
+  const period = resolveViewPeriod();
+  const targets = EMPLOYEES.filter(e => canSelfEvaluate(e, period));
+  const rows = targets.map(e => {
+    const ev = getSelfEvaluation(e.dept, e.name, period);
+    let cls, lbl, when = "-";
+    if (!ev) { cls = "pending"; lbl = "미작성"; }
+    else if (isEvalSubmitted(ev)) {
+      cls = "done"; lbl = "제출완료";
+      when = fmtDateTime(ev.submittedAt);
+    } else { cls = "draft"; lbl = "임시저장"; }
+    return {
+      dept: e.dept, name: e.name, rank: e.rank,
+      cls, lbl, when,
+      total: ev ? ev.total : null,
+      hasComment: !!(ev && String(ev.comment || "").trim()),
+      order: cls === "done" ? 2 : (cls === "draft" ? 1 : 0)
+    };
+  });
+  rows.sort((a,b) => a.order - b.order || a.dept.localeCompare(b.dept,"ko") || a.name.localeCompare(b.name,"ko"));
+  const done = rows.filter(r => r.cls === "done").length;
+  const draft = rows.filter(r => r.cls === "draft").length;
+  const none = rows.filter(r => r.cls === "pending").length;
+  const pct = rows.length ? Math.round(done / rows.length * 100) : 0;
+
+  body.innerHTML = `
+    ${renderPeriodPickerBar(period)}
+    <div class="notice info" style="margin-bottom:12px">
+      <b>${esc(periodLabel(period))}</b> 자기평가 제출 현황입니다. 자기평가가 <b>제출완료</b> 상태여야 1차·2차 평가자가 해당 인원을 평가할 수 있습니다.
+      <br><span class="mini">대상 제외: 수습 기간 인원 · 상무 이상</span>
+    </div>
+    <div class="stat-grid">
+      <div class="stat-box"><div class="label">자기평가 대상</div><div class="value">${rows.length}명</div></div>
+      <div class="stat-box"><div class="label">제출 완료</div><div class="value" style="color:var(--success)">${done}명</div></div>
+      <div class="stat-box"><div class="label">임시저장</div><div class="value" style="color:#1e40af">${draft}명</div></div>
+      <div class="stat-box"><div class="label">미작성</div><div class="value" style="color:var(--danger)">${none}명</div></div>
+      <div class="stat-box"><div class="label">제출률</div><div class="value">${pct}%</div></div>
+    </div>
+    <div style="margin-top:18px;overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th style="width:150px">부서</th><th>이름</th><th style="width:80px">직급</th>
+          <th style="width:100px">상태</th><th style="width:80px">자기 총점</th>
+          <th style="width:80px">실적 기재</th><th style="width:170px">제출 일시</th>
+        </tr></thead>
+        <tbody>${rows.map(r => `
+          <tr>
+            <td>${esc(r.dept)}</td>
+            <td><b>${esc(r.name)}</b></td>
+            <td>${esc(r.rank)}</td>
+            <td style="text-align:center"><span class="chip ${r.cls}">${r.lbl}</span></td>
+            <td style="text-align:center">${fmtScore(r.total)}</td>
+            <td style="text-align:center">${r.hasComment ? "✅" : "—"}</td>
+            <td style="text-align:center" class="mini">${esc(r.when)}</td>
+          </tr>`).join("") || `<tr><td colspan="7" style="text-align:center" class="muted">대상자가 없습니다.</td></tr>`}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
 /* --- 관리자 대시보드 --- */
 function renderAdminHome() {
-  if (!session.isAdmin) return go("admin-login");
+  if (!isAdminUser()) return go("home");
   const tab = session.adminTab || "results";
   $app().innerHTML = `
     <div class="card">
@@ -3163,13 +3791,14 @@ function renderAdminHome() {
         <div class="flex" style="gap:8px;flex-wrap:wrap;justify-content:flex-end;align-items:center">
           <span class="period-badge">🗓 활성: ${esc(periodLabel(getActivePeriod()))}</span>
           ${session.evaluatorDept === "임원" && session.evaluatorRound === "4차" ? `<button class="secondary small" onclick="go('eval-home')">← 평가자 화면</button>` : ``}
-          <button class="secondary small" onclick="logoutAdmin()">로그아웃</button>
+          <button class="secondary small" onclick="go('home')">← 홈</button>
         </div>
       </div>
     </div>
     <div class="card">
       <div class="tabs">
         <div class="tab ${tab==='results'?'active':''}" onclick="setAdminTab('results')">전체 평가결과</div>
+        <div class="tab ${tab==='selfstatus'?'active':''}" onclick="setAdminTab('selfstatus')">자기평가 현황</div>
         <div class="tab ${tab==='dept'?'active':''}"    onclick="setAdminTab('dept')">부서별 분포</div>
         <div class="tab ${tab==='accounts'?'active':''}" onclick="setAdminTab('accounts')">평가자 계정</div>
         <div class="tab ${tab==='data'?'active':''}"     onclick="setAdminTab('data')">데이터 / 내보내기</div>
@@ -3188,11 +3817,12 @@ function renderAdminHome() {
 function setAdminTab(tab) {
   session.adminTab = tab;
   document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
-  const map = { results:0, dept:1, accounts:2, data:3, periods:4, compare:5, employees:6, forms:7, security:8 };
+  const map = { results:0, selfstatus:1, dept:2, accounts:3, data:4, periods:5, compare:6, employees:7, forms:8, security:9 };
   const tabs = document.querySelectorAll(".tab");
   if (tabs[map[tab]]) tabs[map[tab]].classList.add("active");
   const body = document.getElementById("admin-body");
   if (tab === "results") renderAdminResults(body);
+  else if (tab === "selfstatus") renderAdminSelfStatus(body);
   else if (tab === "dept") renderAdminDeptDist(body);
   else if (tab === "accounts") renderAdminAccounts(body);
   else if (tab === "data") renderAdminData(body);
@@ -3334,6 +3964,7 @@ async function adminSaveSubmissionWindow(periodId) {
   }
   try {
     await remotePost("setSubmissionWindow", { period: periodId, opensAt: opens, closesAt: closes });
+    // 로컬 캐시에도 반영
     const p = getSettings().periods.find(x => x.id === periodId);
     if (p) { p.submissionOpensAt = opens; p.submissionClosesAt = closes; }
     msg.innerHTML = `<span style="color:var(--success);font-weight:600">✅ 저장됨</span>`;
@@ -3840,6 +4471,7 @@ function renderAdminForms(body) {
   const period = session.__formsPeriod;
   const groupKey = session.__formsGroup;
   const periodObj = s.periods.find(p => p.id === period);
+  // 편집 가능: 마감(closed) 또는 중단(aborted) 상태의 반기. 활성(진행 중)만 잠금
   const isEditable = !!periodObj && (periodObj.status === "closed" || periodObj.status === "aborted");
   const activePeriod = s.activePeriod;
 
@@ -5108,6 +5740,11 @@ window.adminClearSubmissionWindow = adminClearSubmissionWindow;
 window.adminSaveAnnouncement = adminSaveAnnouncement;
 window.adminClearAnnouncement = adminClearAnnouncement;
 window.dismissAnnouncePopup = dismissAnnouncePopup;
+window.tryUnifiedLogin = tryUnifiedLogin;
+window.logoutUser = logoutUser;
+window.submitForceChangePw = submitForceChangePw;
+window.submitSelfEval = submitSelfEval;
+window.toggleSelfRef = toggleSelfRef;
 window.adminClosePeriod = adminClosePeriod;
 window.adminCreatePeriod = adminCreatePeriod;
 window.cmpChangePeriod = cmpChangePeriod;
