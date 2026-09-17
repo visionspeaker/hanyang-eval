@@ -3408,11 +3408,12 @@ function getViewerRole() {
 function canSeeSecondScore(role) { return role !== "dept-1st"; }              // dept-1st 만 2차 숨김
 function canSeeAverage(role)     { return role !== "dept-1st"; }              // dept-1st 는 평균도 무의미
 function canSeeGrade(role)       { return role === "admin" || role === "exec-1st" || role === "exec-2nd"; }
-function canSeeRank(role)        { return canSeeGrade(role); }                // 등급 볼 수 있어야 순위도 의미
+// 부서 순위: 평균을 볼 수 있는 사람이면 순위도 열람 (1차 평가자는 제외)
+function canSeeRank(role)        { return role !== "dept-1st" && role !== "guest"; }
 function canSeeDistBar(role)     { return canSeeGrade(role); }                // S/A/B/C 분포 바 = 등급 정보
-// 가감점(근태·안전·교육) 조정 결과 열람 권한
-function canSeeAdjustment(role)       { return role === "admin" || role === "exec-1st" || role === "exec-2nd" || role === "hr-safety"; }
-function canSeeAdjustmentReason(role) { return role === "admin" || role === "exec-1st" || role === "exec-2nd" || role === "hr-safety"; }
+// 가감점(근태·안전·교육) 조정 결과 열람 권한 — 관리자 / 인사·안전·교육 담당만
+function canSeeAdjustment(role)       { return role === "admin" || role === "hr-safety"; }
+function canSeeAdjustmentReason(role) { return role === "admin" || role === "hr-safety"; }
 // 가감점 관리 화면 접근 권한
 function canManageAdjustments(role)   { return role === "hr-safety" || role === "admin"; }
 // 가감점 카테고리 (표시 순서 = 저장 순서)
@@ -3449,20 +3450,19 @@ function renderDeptResultsInline(dept, container) {
   const showRank  = canSeeRank(role);
   const showSec   = canSeeSecondScore(role);
   const showAvg   = canSeeAverage(role);
-  const showGrade = canSeeGrade(role);
-  const showDist  = canSeeDistBar(role);
-  const showAdj   = canSeeAdjustment(role);  // 조정점(가감점) 열 노출
+  const showAdj   = canSeeAdjustment(role);  // 가감점(근태·안전·교육) 열 노출
+  // 평가자 화면에서는 등급 / S·A·B·C 분포를 표시하지 않는다 (관리자 대시보드에서만 열람)
 
   const headCells = [];
   if (showRank) headCells.push(`<th style="width:50px">순위</th>`);
   headCells.push(`<th>이름</th>`);
   headCells.push(`<th style="width:80px">직급</th>`);
+  headCells.push(`<th style="width:80px" title="본인이 제출한 자기평가 총점">자기평가</th>`);
   headCells.push(`<th style="width:80px">1차</th>`);
   if (showSec)   headCells.push(`<th style="width:80px">2차</th>`);
-  if (showAvg)   headCells.push(`<th style="width:80px">원평균</th>`);
-  if (showAdj)   headCells.push(`<th style="width:70px" title="근태+안전+교육 가감점 합계">조정</th>`);
-  if (showAvg)   headCells.push(`<th style="width:80px">조정평균</th>`);
-  if (showGrade) headCells.push(`<th style="width:80px">등급</th>`);
+  if (showAvg)   headCells.push(`<th style="width:80px" title="1차·2차 점수의 평균 (가감점 반영 전)">원평균</th>`);
+  if (showAdj)   headCells.push(`<th style="width:80px" title="안전 · 근태 · 교육 가감점 합계">가감점</th>`);
+  if (showAvg)   headCells.push(`<th style="width:90px" title="원평균 + 가감점">최종 평균</th>`);
   const colSpan = headCells.length;
 
   const rows = results.map(r => {
@@ -3470,6 +3470,7 @@ function renderDeptResultsInline(dept, container) {
     if (showRank) tds.push(`<td>${r.rankIndex}</td>`);
     tds.push(`<td><b>${esc(r.empName)}</b></td>`);
     tds.push(`<td>${esc(r.empRank)}</td>`);
+    tds.push(`<td style="text-align:center">${renderSelfScoreCell(r)}</td>`);
     tds.push(`<td style="text-align:center">${fmtScore(r.score1)}</td>`);
     if (showSec)   tds.push(`<td style="text-align:center">${fmtScore(r.score2)}</td>`);
     if (showAvg)   tds.push(`<td style="text-align:center">${r.avg !== null ? r.avg.toFixed(1) : "-"}</td>`);
@@ -3481,11 +3482,9 @@ function renderDeptResultsInline(dept, container) {
       tds.push(`<td style="text-align:center;${style}">${adj > 0 ? "+" + adj : (adj === 0 ? "0" : adj)}</td>`);
     }
     if (showAvg)   tds.push(`<td style="text-align:center"><b>${r.avgAdjusted !== null ? r.avgAdjusted.toFixed(1) : "-"}</b></td>`);
-    if (showGrade) tds.push(`<td style="text-align:center">${r.grade ? `<span class="chip ${r.grade.toLowerCase()}">${r.grade}</span>` : "-"}</td>`);
     return `<tr>${tds.join("")}</tr>`;
   }).join("");
 
-  const dist = gradeDistribution(results);
   const submittedCount = results.filter(r => r.avg !== null).length;
 
   // stat 박스: 대상/제출은 항상, 평균은 dept-1st 만 숨김
@@ -3500,9 +3499,9 @@ function renderDeptResultsInline(dept, container) {
   // 안내 문구는 계정별로 살짝 다르게
   let noticeText;
   if (role === "dept-1st") {
-    noticeText = `우리 부서 (<b>${esc(dept)}</b>) 의 <b>${esc(periodLabel(period))}</b> · <b>1차 평가자 열람 화면</b>입니다. 본인이 매긴 <b>1차 점수만</b> 확인 가능하며, 2차/평균/등급은 표시되지 않습니다.`;
+    noticeText = `우리 부서 (<b>${esc(dept)}</b>) 의 <b>${esc(periodLabel(period))}</b> · <b>1차 평가자 열람 화면</b>입니다. 본인이 매긴 <b>1차 점수만</b> 확인 가능하며, 2차 · 평균 · 순위는 표시되지 않습니다.`;
   } else if (role === "dept-2nd") {
-    noticeText = `우리 부서 (<b>${esc(dept)}</b>) 의 <b>${esc(periodLabel(period))}</b> · <b>2차 평가자 열람 화면</b>입니다. 1차/2차 점수와 부서 평균까지 확인할 수 있습니다. 최종 등급은 관리자만 열람합니다.`;
+    noticeText = `우리 부서 (<b>${esc(dept)}</b>) 의 <b>${esc(periodLabel(period))}</b> · <b>2차 평가자 열람 화면</b>입니다. 자기평가 점수, 1차/2차 점수, 원평균 · 최종 평균과 부서 순위를 확인할 수 있습니다. 등급과 가감점 내역은 관리자 · 인사/안전/교육 담당만 열람합니다.`;
   } else {
     noticeText = `우리 부서 (<b>${esc(dept)}</b>) 의 <b>${esc(periodLabel(period))}</b> 평가 결과입니다.`;
   }
@@ -3511,14 +3510,13 @@ function renderDeptResultsInline(dept, container) {
     ${renderPeriodPickerBar(period)}
     <div class="notice info">${noticeText}</div>
     <div class="stat-grid">${statBoxes.join("")}</div>
-    ${showDist ? `
+    ${showRank ? `
       <div>
-        <h3>부서 내 S/A/B/C 분포</h3>
-        <div class="mini" style="margin-bottom:6px">등급 산정: ${esc(gradingModeLabel(results))}</div>
-        ${renderDistBar(dist)}
+        <h3 style="margin:0 0 4px">부서 순위</h3>
+        <div class="mini" style="margin-bottom:6px">최종 평균(가감점 반영) 기준으로 정렬됩니다.</div>
       </div>
-    ` : ``}
-    <div style="margin-top:20px">
+    ` : `<h3 style="margin:0 0 6px">부서 명단</h3>`}
+    <div style="margin-top:10px;overflow-x:auto">
       <table>
         <thead><tr>${headCells.join("")}</tr></thead>
         <tbody>${rows || `<tr><td colspan="${colSpan}" style="text-align:center" class="muted">아직 결과가 없습니다.</td></tr>`}</tbody>
