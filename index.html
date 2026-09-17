@@ -4992,28 +4992,31 @@ function renderExecResultTable(results) {
       <td><b>${esc(r.empName)}</b></td>
       <td>${esc(r.empRank)}</td>
       <td>${esc(r.dept)}</td>
+      <td style="text-align:center">${renderSelfScoreCell(r)}</td>
       <td style="text-align:center">${r.score3 !== null ? r.score3.toFixed(1) : "-"}</td>
       <td style="text-align:center">${r.score4 ?? "-"}</td>
       <td style="text-align:center"><b>${r.avg !== null ? r.avg.toFixed(1) : "-"}</b></td>
       <td style="text-align:center">${r.grade ? `<span class="chip ${r.grade.toLowerCase()}">${r.grade}</span>` : "-"}</td>
     </tr>
   `).join("");
+  const selfDone = results.filter(r => r.selfSubmitted).length;
   return `
     <div style="margin-top:24px;border-top:2px solid var(--primary);padding-top:16px">
       <div class="flex between">
         <h3 style="margin:0">임원 (부장·이사) <span class="muted">(${results.length}명)</span></h3>
         <div class="mini">S ${dist.S.length} · A ${dist.A.length} · B ${dist.B.length} · C ${dist.C.length}</div>
       </div>
-      <div class="mini" style="margin:4px 0 6px">등급 산정: ${esc(gradingModeLabel(results))} · 1차(조규오/임웅걸) + 2차(양정일)</div>
+      <div class="mini" style="margin:4px 0 6px">등급 산정: ${esc(gradingModeLabel(results))} · 1차(조규오/임웅걸) + 2차(양정일) · 자기평가 제출 ${selfDone}/${results.length}명</div>
       ${renderDistBar(dist)}
       <div style="margin-top:10px;overflow-x:auto">
       <table>
         <thead><tr>
           <th style="width:50px">순위</th><th>이름</th><th>직급</th><th>부서</th>
+          <th style="width:70px" title="본인이 제출한 자기평가 총점">자기</th>
           <th style="width:70px">1차</th><th style="width:70px">2차</th>
           <th style="width:70px">평균</th><th style="width:70px">등급</th>
         </tr></thead>
-        <tbody>${rows || `<tr><td colspan="8" style="text-align:center" class="muted">아직 결과가 없습니다.</td></tr>`}</tbody>
+        <tbody>${rows || `<tr><td colspan="9" style="text-align:center" class="muted">아직 결과가 없습니다.</td></tr>`}</tbody>
       </table>
       </div>
     </div>
@@ -5028,32 +5031,42 @@ function renderDeptResultTable(dept, results) {
       <td><b>${esc(r.empName)}</b></td>
       <td>${esc(r.empRank)}</td>
       <td>${esc(r.rankCategory)}</td>
+      <td style="text-align:center">${renderSelfScoreCell(r)}</td>
       <td style="text-align:center">${fmtScore(r.score1)}</td>
       <td style="text-align:center">${fmtScore(r.score2)}</td>
       <td style="text-align:center"><b>${r.avg !== null ? r.avg.toFixed(1) : "-"}</b></td>
       <td style="text-align:center">${r.grade ? `<span class="chip ${r.grade.toLowerCase()}">${r.grade}</span>` : "-"}</td>
     </tr>
   `).join("");
+  const selfDone = results.filter(r => r.selfSubmitted).length;
   return `
     <div style="margin-top:24px;border-top:1px solid var(--border);padding-top:16px">
       <div class="flex between">
         <h3 style="margin:0">${esc(dept)} (${results.length}명)</h3>
         <div class="mini">S ${dist.S.length} · A ${dist.A.length} · B ${dist.B.length} · C ${dist.C.length}</div>
       </div>
-      <div class="mini" style="margin:4px 0 6px">등급 산정: ${esc(gradingModeLabel(results))}</div>
+      <div class="mini" style="margin:4px 0 6px">등급 산정: ${esc(gradingModeLabel(results))} · 자기평가 제출 ${selfDone}/${results.length}명</div>
       ${renderDistBar(dist)}
       <div style="margin-top:10px;overflow-x:auto">
       <table>
         <thead><tr>
           <th style="width:50px">순위</th><th>이름</th><th>직급</th><th>평가표</th>
+          <th style="width:70px" title="본인이 제출한 자기평가 총점">자기</th>
           <th style="width:70px">1차</th><th style="width:70px">2차</th>
           <th style="width:70px">평균</th><th style="width:70px">등급</th>
         </tr></thead>
-        <tbody>${rows || `<tr><td colspan="8" style="text-align:center" class="muted">아직 결과가 없습니다.</td></tr>`}</tbody>
+        <tbody>${rows || `<tr><td colspan="9" style="text-align:center" class="muted">아직 결과가 없습니다.</td></tr>`}</tbody>
       </table>
       </div>
     </div>
   `;
+}
+
+// 자기평가 점수 셀 (미제출/임시저장 상태도 구분 표시)
+function renderSelfScoreCell(r) {
+  if (r.selfSubmitted) return `<span style="color:#166534;font-weight:600">${fmtScore(r.selfScore)}</span>`;
+  if (r.selfDraft)     return `<span class="chip draft" style="font-size:10px">임시저장</span>`;
+  return `<span class="mini muted">미제출</span>`;
 }
 
 function renderAdminDeptDist(body) {
@@ -5603,10 +5616,12 @@ function cancelUpload() {
 function exportEvaluationsCsv() {
   const period = resolveViewPeriod();
   const depts = [...new Set(EMPLOYEES.filter(e => !isExecEmp(e)).map(e => e.dept))];
-  const rows = [["반기","부서","이름","직급","평가표","1차점수","2차점수","임원1차점수","임원2차점수","평균","등급","부서내순위"]];
+  const selfCsv = r => r.selfSubmitted ? Number(fmtScore(r.selfScore)) : (r.selfDraft ? "임시저장" : "미제출");
+  const rows = [["반기","부서","이름","직급","평가표","자기평가점수","1차점수","2차점수","임원1차점수","임원2차점수","평균","등급","부서내순위"]];
   depts.forEach(d => {
     computeDeptResults(d, period).forEach(r => {
       rows.push([periodLabel(period), d, r.empName, r.empRank, r.rankCategory,
+        selfCsv(r),
         r.score1 !== null ? Number(fmtScore(r.score1)) : "", r.score2 !== null ? Number(fmtScore(r.score2)) : "", "", "",
         r.avg !== null ? r.avg.toFixed(2) : "",
         r.grade ?? "", r.rankIndex]);
@@ -5615,6 +5630,7 @@ function exportEvaluationsCsv() {
   // 임원(부장·이사)
   computeExecResults(period).forEach(r => {
     rows.push([periodLabel(period), r.dept, r.empName, r.empRank, r.rankCategory,
+      selfCsv(r),
       "", "",
       r.score3 !== null ? r.score3.toFixed(2) : "",
       r.score4 ?? "",
@@ -5690,12 +5706,17 @@ function computeDeptResults(dept, period) {
     // 가감점 조회 (원점수 유지 + 조정평균 별도)
     const adjustment = getAdjustmentTotal(period, dept, e.name);
     const avgAdjusted = avg !== null ? avg + adjustment : null;
+    // 자기평가 (제출 완료된 것만 점수로 인정)
+    const es = evals.find(x => x.dept===dept && x.empName===e.name && x.round===SELF_ROUND);
     return {
       empName: e.name,
       empRank: e.rank,
       rankCategory: e.rankCategory,
       score1: e1 ? e1.total : null,
       score2: e2 ? e2.total : null,
+      selfScore: isEvalSubmitted(es) ? es.total : null,
+      selfSubmitted: isEvalSubmitted(es),
+      selfDraft: !!es && !isEvalSubmitted(es),
       avg,                  // 원 평균 (변경 없음 · 감사 기록)
       adjustment,           // 가감점 합계
       avgAdjusted           // 등급 산정에 사용되는 조정 평균
@@ -5762,6 +5783,7 @@ function computeExecResults(period) {
     const r3kq = evals.find(x => x.dept===e.dept && x.empName===e.name && x.round==="3차-조규오");
     const r3iw = evals.find(x => x.dept===e.dept && x.empName===e.name && x.round==="3차-임웅걸");
     const r4   = evals.find(x => x.dept===e.dept && x.empName===e.name && x.round==="4차");
+    const rSelf = evals.find(x => x.dept===e.dept && x.empName===e.name && x.round===SELF_ROUND);
     // 3차: 대상자별로 조규오 또는 임웅걸 중 한 명만 평가 (둘 다 있으면 평균)
     let score3 = null, eval3Name = null;
     const arr3 = [];
@@ -5780,6 +5802,9 @@ function computeExecResults(period) {
       dept: e.dept, empName: e.name, empRank: e.rank, rankCategory: e.rankCategory,
       score3, score4, eval3Name,
       eval4Name: r4 ? r4.evaluatorName : null,
+      selfScore: isEvalSubmitted(rSelf) ? rSelf.total : null,
+      selfSubmitted: isEvalSubmitted(rSelf),
+      selfDraft: !!rSelf && !isEvalSubmitted(rSelf),
       avg, adjustment, avgAdjusted
     };
   });
