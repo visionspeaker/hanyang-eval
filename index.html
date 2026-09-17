@@ -5020,7 +5020,9 @@ function renderExecResultTable(results) {
       <td style="text-align:center">${renderSelfScoreCell(r)}</td>
       <td style="text-align:center">${r.score3 !== null ? r.score3.toFixed(1) : "-"}</td>
       <td style="text-align:center">${r.score4 ?? "-"}</td>
-      <td style="text-align:center"><b>${r.avg !== null ? r.avg.toFixed(1) : "-"}</b></td>
+      <td style="text-align:center">${r.avg !== null ? r.avg.toFixed(1) : "-"}</td>
+      <td style="text-align:center">${renderAdjCell(r)}</td>
+      <td style="text-align:center"><b>${r.avgAdjusted !== null && r.avgAdjusted !== undefined ? r.avgAdjusted.toFixed(1) : (r.avg !== null ? r.avg.toFixed(1) : "-")}</b></td>
       <td style="text-align:center">${r.grade ? `<span class="chip ${r.grade.toLowerCase()}">${r.grade}</span>` : "-"}</td>
     </tr>
   `).join("");
@@ -5039,9 +5041,12 @@ function renderExecResultTable(results) {
           <th style="width:50px">순위</th><th>이름</th><th>직급</th><th>부서</th>
           <th style="width:70px" title="본인이 제출한 자기평가 총점">자기</th>
           <th style="width:70px">1차</th><th style="width:70px">2차</th>
-          <th style="width:70px">평균</th><th style="width:70px">등급</th>
+          <th style="width:76px" title="1차·2차 점수의 평균 (가감점 반영 전)">원평균</th>
+          <th style="width:76px" title="근태 · 안전 · 교육 가감점 합계">가감점</th>
+          <th style="width:82px" title="원평균 + 가감점 · 등급 산정 기준">최종 평균</th>
+          <th style="width:70px">등급</th>
         </tr></thead>
-        <tbody>${rows || `<tr><td colspan="9" style="text-align:center" class="muted">아직 결과가 없습니다.</td></tr>`}</tbody>
+        <tbody>${rows || `<tr><td colspan="11" style="text-align:center" class="muted">아직 결과가 없습니다.</td></tr>`}</tbody>
       </table>
       </div>
     </div>
@@ -5059,7 +5064,9 @@ function renderDeptResultTable(dept, results) {
       <td style="text-align:center">${renderSelfScoreCell(r)}</td>
       <td style="text-align:center">${fmtScore(r.score1)}</td>
       <td style="text-align:center">${fmtScore(r.score2)}</td>
-      <td style="text-align:center"><b>${r.avg !== null ? r.avg.toFixed(1) : "-"}</b></td>
+      <td style="text-align:center">${r.avg !== null ? r.avg.toFixed(1) : "-"}</td>
+      <td style="text-align:center">${renderAdjCell(r)}</td>
+      <td style="text-align:center"><b>${r.avgAdjusted !== null && r.avgAdjusted !== undefined ? r.avgAdjusted.toFixed(1) : (r.avg !== null ? r.avg.toFixed(1) : "-")}</b></td>
       <td style="text-align:center">${r.grade ? `<span class="chip ${r.grade.toLowerCase()}">${r.grade}</span>` : "-"}</td>
     </tr>
   `).join("");
@@ -5078,13 +5085,24 @@ function renderDeptResultTable(dept, results) {
           <th style="width:50px">순위</th><th>이름</th><th>직급</th><th>평가표</th>
           <th style="width:70px" title="본인이 제출한 자기평가 총점">자기</th>
           <th style="width:70px">1차</th><th style="width:70px">2차</th>
-          <th style="width:70px">평균</th><th style="width:70px">등급</th>
+          <th style="width:76px" title="1차·2차 점수의 평균 (가감점 반영 전)">원평균</th>
+          <th style="width:76px" title="근태 · 안전 · 교육 가감점 합계">가감점</th>
+          <th style="width:82px" title="원평균 + 가감점 · 등급 산정 기준">최종 평균</th>
+          <th style="width:70px">등급</th>
         </tr></thead>
-        <tbody>${rows || `<tr><td colspan="9" style="text-align:center" class="muted">아직 결과가 없습니다.</td></tr>`}</tbody>
+        <tbody>${rows || `<tr><td colspan="11" style="text-align:center" class="muted">아직 결과가 없습니다.</td></tr>`}</tbody>
       </table>
       </div>
     </div>
   `;
+}
+
+// 가감점(근태·안전·교육 합계) 셀
+function renderAdjCell(r) {
+  const adj = Number(r.adjustment) || 0;
+  if (adj > 0) return `<span style="color:#059669;font-weight:700">+${fmtScore(adj)}</span>`;
+  if (adj < 0) return `<span style="color:#dc2626;font-weight:700">${fmtScore(adj)}</span>`;
+  return `<span style="color:var(--muted)">0</span>`;
 }
 
 // 자기평가 점수 셀 (미제출/임시저장 상태도 구분 표시)
@@ -5642,13 +5660,16 @@ function exportEvaluationsCsv() {
   const period = resolveViewPeriod();
   const depts = [...new Set(EMPLOYEES.filter(e => !isExecEmp(e)).map(e => e.dept))];
   const selfCsv = r => r.selfSubmitted ? Number(fmtScore(r.selfScore)) : (r.selfDraft ? "임시저장" : "미제출");
-  const rows = [["반기","부서","이름","직급","평가표","자기평가점수","1차점수","2차점수","임원1차점수","임원2차점수","평균","등급","부서내순위"]];
+  const finalAvg = r => (r.avgAdjusted != null ? r.avgAdjusted : r.avg);
+  const rows = [["반기","부서","이름","직급","평가표","자기평가점수","1차점수","2차점수","임원1차점수","임원2차점수","원평균","가감점","최종평균","등급","부서내순위"]];
   depts.forEach(d => {
     computeDeptResults(d, period).forEach(r => {
       rows.push([periodLabel(period), d, r.empName, r.empRank, r.rankCategory,
         selfCsv(r),
         r.score1 !== null ? Number(fmtScore(r.score1)) : "", r.score2 !== null ? Number(fmtScore(r.score2)) : "", "", "",
         r.avg !== null ? r.avg.toFixed(2) : "",
+        Number(r.adjustment) || 0,
+        finalAvg(r) != null ? finalAvg(r).toFixed(2) : "",
         r.grade ?? "", r.rankIndex]);
     });
   });
@@ -5660,6 +5681,8 @@ function exportEvaluationsCsv() {
       r.score3 !== null ? r.score3.toFixed(2) : "",
       r.score4 ?? "",
       r.avg !== null ? r.avg.toFixed(2) : "",
+      Number(r.adjustment) || 0,
+      finalAvg(r) != null ? finalAvg(r).toFixed(2) : "",
       r.grade ?? "", r.rankIndex]);
   });
   const csv = "\uFEFF" + rows.map(r => r.map(v => `"${String(v).replaceAll('"','""')}"`).join(",")).join("\n");
