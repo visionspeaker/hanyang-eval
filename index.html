@@ -677,8 +677,16 @@ function rebuildFromEmployees(serverEmps) {
     dept: e.dept, name: e.name, rank: e.rank || "", rankCategory: e.rankCategory || "대리이하",
     notes: e.notes || ""
   }));
-  // 임원(부장·이사) 자동 분배
-  const execEmps = EMPLOYEES.filter(e => e.rank === "부장" || e.rank === "이사");
+  // 임원(부장·이사) 자동 분배 — 직급 순(부장 → 이사) + 가나다순으로 정렬
+  const execEmps = EMPLOYEES.filter(e => e.rank === "부장" || e.rank === "이사")
+    .slice()
+    .sort((a, b) => {
+      const rankOrder = { "부장": 0, "이사": 1 };
+      const ra = rankOrder[a.rank] ?? 99;
+      const rb = rankOrder[b.rank] ?? 99;
+      if (ra !== rb) return ra - rb;
+      return a.name.localeCompare(b.name, "ko");
+    });
   const kqNames = new Set(["강유석", "송지훈"]); // 조규오 담당 (사용자 지정)
   const isKq = e => kqNames.has(e.name);
   const isSw = e => e.dept === "부설연구소" && !isKq(e); // 이석원 전무 담당 (부설연구소)
@@ -2771,7 +2779,8 @@ function renderDeptResultsInline(dept, container) {
 function renderExecResultsInline(container) {
   const period = resolveViewPeriod();
   const results = computeExecResults(period);
-  const totalTargets = EMPLOYEES.filter(isExecEmp).length;
+  // 임원 평가(3차·4차) 대상은 부장·이사만
+  const totalTargets = EMPLOYEES.filter(e => e.rank === "부장" || e.rank === "이사").length;
   const role = getViewerRole();
   const showGrade = canSeeGrade(role);
   const showDist  = canSeeDistBar(role);
@@ -4854,7 +4863,8 @@ function computeDeptResults(dept, period) {
  * 11명 전체를 하나의 풀로 S20/A30/B40/C10 상대평가.
  */
 function computeExecResults(period) {
-  const emps = EMPLOYEES.filter(isExecEmp);
+  // 임원 평가(3차·4차) 대상은 부장·이사만 (상무 이상은 평가 대상 아님)
+  const emps = EMPLOYEES.filter(e => e.rank === "부장" || e.rank === "이사");
   const evals = getEvaluationsByPeriod(period);
   const rows = emps.map(e => {
     const r3kq = evals.find(x => x.dept===e.dept && x.empName===e.name && x.round==="3차-조규오");
