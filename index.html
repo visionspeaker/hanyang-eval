@@ -1924,7 +1924,7 @@ function renderEvalLogin() {
   $app().innerHTML = `
     <div class="card" style="max-width:520px;margin:40px auto">
       <h2>평가자 로그인</h2>
-      <div class="notice info">소속 부서와 차수를 선택한 후, 평가자 비밀번호를 입력해 주세요.</div>
+      <div class="notice info">소속 부서와 평가자를 선택한 후, 비밀번호를 입력해 주세요.</div>
       <div id="login-err"></div>
       <div style="margin-bottom:12px">
         <label>부서</label>
@@ -1934,7 +1934,7 @@ function renderEvalLogin() {
         </select>
       </div>
       <div style="margin-bottom:12px">
-        <label>평가 차수</label>
+        <label>평가자</label>
         <select id="login-round">
           <option value="">— 선택 —</option>
         </select>
@@ -1955,22 +1955,39 @@ function renderEvalLogin() {
     const d = $dept.value;
     const r = evs[d] || {};
     const opts = [`<option value="">— 선택 —</option>`];
-    // 일반 부서 표시 순서: 1차 → 2차, 임원 풀: 1차(조규오) → 1차(임웅걸) → 2차(양정일)
-    const order = ["1차","2차","3차-조규오","3차-임웅걸","4차"];
-    order.forEach(k => {
-      if (r[k]) {
-        const info = r[k];
-        const label = displayRound(k); // 3차-* → 1차, 4차 → 2차, 그 외 그대로
-        opts.push(`<option value="${esc(k)}">${esc(label)} 평가자 (${esc(info.name)} ${esc(info.title)})</option>`);
-      }
-    });
-    // 위 order 에 없는 기타 키도 혹시 모를 경우를 대비해 표시
-    Object.keys(r).forEach(k => {
-      if (!order.includes(k)) {
-        const info = r[k];
-        opts.push(`<option value="${esc(k)}">${esc(k)} 평가자 (${esc(info.name)} ${esc(info.title)})</option>`);
-      }
-    });
+    if (d === "임원") {
+      // 임원 부서: 차수 라벨 숨기고 평가자 이름·직급만 표시
+      // 순서: 이석원 전무 → 임웅걸 부사장 → 조규오 부사장 → 양정일 대표이사
+      const execOrder = ["3차-이석원","3차-임웅걸","3차-조규오","4차"];
+      execOrder.forEach(k => {
+        if (r[k]) {
+          const info = r[k];
+          opts.push(`<option value="${esc(k)}">${esc(info.name)} ${esc(info.title)}</option>`);
+        }
+      });
+      Object.keys(r).forEach(k => {
+        if (!execOrder.includes(k)) {
+          const info = r[k];
+          opts.push(`<option value="${esc(k)}">${esc(info.name)} ${esc(info.title)}</option>`);
+        }
+      });
+    } else {
+      // 일반 부서: 기존 방식 (차수 라벨 유지)
+      const order = ["1차","2차","3차-조규오","3차-이석원","3차-임웅걸","4차"];
+      order.forEach(k => {
+        if (r[k]) {
+          const info = r[k];
+          const label = displayRound(k);
+          opts.push(`<option value="${esc(k)}">${esc(label)} 평가자 (${esc(info.name)} ${esc(info.title)})</option>`);
+        }
+      });
+      Object.keys(r).forEach(k => {
+        if (!order.includes(k)) {
+          const info = r[k];
+          opts.push(`<option value="${esc(k)}">${esc(k)} 평가자 (${esc(info.name)} ${esc(info.title)})</option>`);
+        }
+      });
+    }
     $round.innerHTML = opts.join("");
   });
   document.getElementById("login-pw").addEventListener("keydown", e => {
