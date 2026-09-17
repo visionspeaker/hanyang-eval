@@ -1091,11 +1091,29 @@ function normalizeSettings(s) {
     else if (p.status === "active") p.status = "closed"; // 활성 반기가 없으면 그동안 active 표시된 건 closed 로 정정
   });
   cleaned.sort((a,b) => periodSortKey(b.id) - periodSortKey(a.id)); // 최신이 위로
-  return { activePeriod: active, periods: cleaned };
+  return {
+    activePeriod: active,
+    periods: cleaned,
+    announcementTitle: src.announcementTitle || "",
+    announcementBody:  src.announcementBody  || ""
+  };
 }
 function getSettings() {
   if (!_cache.settings) _cache.settings = normalizeSettings(makeDefaultSettings());
   return _cache.settings;
+}
+// 홈 화면 공지 팝업 (관리자가 반기 관리에서 편집)
+function getAnnouncement() {
+  const s = getSettings();
+  return { title: s.announcementTitle || "", body: s.announcementBody || "" };
+}
+async function setAnnouncementRemote(title, body) {
+  const s = getSettings();
+  s.announcementTitle = title || "";
+  s.announcementBody  = body  || "";
+  if (IS_REMOTE()) {
+    await remotePost("setAnnouncement", { title, body });
+  }
 }
 function getActivePeriod() { return getSettings().activePeriod; }
 // 평가 제출/조회에 사용할 유효 반기 (활성 반기가 없으면 가장 최근 반기로 fallback)
@@ -1769,6 +1787,51 @@ function renderHome() {
       </ul>
     </div>
   `;
+  maybeShowAnnouncementPopup();
+}
+
+// 공지 팝업 렌더 · 24시간 억제(오늘 다시 보지 않기)
+function maybeShowAnnouncementPopup() {
+  const a = getAnnouncement();
+  if (!a.title && !a.body) return;
+  try {
+    const until = Number(localStorage.getItem("hy_announce_dismiss_until") || 0);
+    if (until && Date.now() < until) return;
+  } catch(e) {}
+  if (document.getElementById("announce-overlay")) return;
+  const overlay = document.createElement("div");
+  overlay.id = "announce-overlay";
+  overlay.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px";
+  overlay.innerHTML = `
+    <div style="background:#fff;border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,0.3);max-width:460px;width:100%;overflow:hidden">
+      <div style="background:linear-gradient(180deg,#d97706,#b45309);color:#fff;padding:16px 22px;font-weight:700;font-size:15px;display:flex;justify-content:space-between;align-items:center">
+        <span>📢 공지사항</span>
+        <span onclick="dismissAnnouncePopup(false)" style="cursor:pointer;opacity:0.85;font-size:20px">✕</span>
+      </div>
+      <div style="padding:24px">
+        <div style="font-size:44px;text-align:center;margin-bottom:10px">📅</div>
+        <h3 style="text-align:center;margin:0 0 12px;color:#92400e;font-size:17px">${esc(a.title)}</h3>
+        <div style="color:#374151;font-size:13px;line-height:1.7;white-space:pre-wrap">${esc(a.body)}</div>
+      </div>
+      <div style="padding:12px 22px 18px;display:flex;justify-content:space-between;align-items:center;border-top:1px solid #f3f4f6;gap:12px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#6b7280;cursor:pointer;user-select:none">
+          <input type="checkbox" id="announce-dismiss-chk" style="width:auto"/> 오늘 하루 다시 보지 않기
+        </label>
+        <button onclick="dismissAnnouncePopup(document.getElementById('announce-dismiss-chk').checked)" style="background:#1e3a8a;color:#fff;border:none;padding:8px 22px;border-radius:6px;font-size:13px;cursor:pointer">확인</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+}
+function dismissAnnouncePopup(rememberToday) {
+  const el = document.getElementById("announce-overlay");
+  if (el) el.remove();
+  if (rememberToday) {
+    try {
+      const until = Date.now() + 24 * 60 * 60 * 1000;
+      localStorage.setItem("hy_announce_dismiss_until", String(until));
+    } catch(e) {}
+  }
 }
 
 // 평가자 로그인 후 이동할 탭을 미리 지정해 두고 로그인 화면으로 이동
@@ -3202,6 +3265,9 @@ function renderAdminPeriods(body) {
     <h3 style="margin-top:24px">평가 제출 기간 (활성 반기)</h3>
     ${renderSubmissionWindowEditor(active)}
 
+    <h3 style="margin-top:24px">홈 화면 공지 팝업</h3>
+    ${renderAnnouncementEditor()}
+
     <h3 style="margin-top:24px">새 반기 생성</h3>
     <div class="flex" style="gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:6px">
       <div>
@@ -3281,6 +3347,52 @@ async function adminClearSubmissionWindow(periodId) {
   document.getElementById("sw-opens").value = "";
   document.getElementById("sw-closes").value = "";
   await adminSaveSubmissionWindow(periodId);
+}
+
+// 홈 화면 공지 팝업 편집 UI
+function renderAnnouncementEditor() {
+  const a = getAnnouncement();
+  const active = !!(a.title || a.body);
+  return `
+    <div class="notice info" style="margin-bottom:10px">
+      홈 화면 진입 시 표시되는 공지 팝업을 편집합니다. 제목과 본문을 모두 비운 후 저장하면 팝업이 해제됩니다.
+      <br>사용자별 "오늘 하루 다시 보지 않기" 는 브라우저 localStorage 로 24시간 기억됩니다.
+      <br>현재 상태: <b>${active ? "🟠 공지 노출 중" : "⚪ 공지 없음"}</b>
+    </div>
+    <div style="display:grid;gap:8px;margin-bottom:8px">
+      <div>
+        <label class="mini">제목</label>
+        <input id="ann-title" type="text" value="${esc(a.title)}" placeholder="예: 인사평가 일정이 변경되었습니다"/>
+      </div>
+      <div>
+        <label class="mini">본문 (줄바꿈 지원)</label>
+        <textarea id="ann-body" rows="6" placeholder="본문 내용을 입력하세요...">${esc(a.body)}</textarea>
+      </div>
+    </div>
+    <div class="flex" style="gap:8px;align-items:center;flex-wrap:wrap">
+      <button onclick="adminSaveAnnouncement()">💾 저장</button>
+      <button class="secondary" onclick="adminClearAnnouncement()">공지 해제</button>
+      <span id="ann-msg" class="mini"></span>
+    </div>
+  `;
+}
+async function adminSaveAnnouncement() {
+  const title = (document.getElementById("ann-title").value || "").trim();
+  const body  = (document.getElementById("ann-body").value  || "").trim();
+  const msg = document.getElementById("ann-msg");
+  try {
+    await setAnnouncementRemote(title, body);
+    msg.innerHTML = `<span style="color:var(--success);font-weight:600">✅ 저장됨</span>`;
+    setTimeout(() => renderAdminPeriods(document.getElementById("admin-body")), 400);
+  } catch (e) {
+    msg.innerHTML = `<span style="color:var(--danger)">저장 실패: ${esc(e.message)}</span>`;
+  }
+}
+async function adminClearAnnouncement() {
+  if (!confirm("공지 팝업을 해제합니다. 이후 홈에서 공지가 표시되지 않습니다.\n계속할까요?")) return;
+  document.getElementById("ann-title").value = "";
+  document.getElementById("ann-body").value = "";
+  await adminSaveAnnouncement();
 }
 
 async function adminSetActivePeriod(periodId) {
@@ -4993,6 +5105,9 @@ window.setViewPeriod = setViewPeriod;
 window.adminSetActivePeriod = adminSetActivePeriod;
 window.adminSaveSubmissionWindow = adminSaveSubmissionWindow;
 window.adminClearSubmissionWindow = adminClearSubmissionWindow;
+window.adminSaveAnnouncement = adminSaveAnnouncement;
+window.adminClearAnnouncement = adminClearAnnouncement;
+window.dismissAnnouncePopup = dismissAnnouncePopup;
 window.adminClosePeriod = adminClosePeriod;
 window.adminCreatePeriod = adminCreatePeriod;
 window.cmpChangePeriod = cmpChangePeriod;
