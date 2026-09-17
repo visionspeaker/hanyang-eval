@@ -559,7 +559,8 @@
     }
     /* 등급 버튼을 터치하기 좋게 크게 */
     .eval-table td .score-cell,
-    .score-cell { padding: 14px 4px !important; font-size: 16px !important; }
+    .eval-table td .score-cell-ro,
+    .score-cell, .score-cell-ro { padding: 14px 4px !important; font-size: 16px !important; }
     .eval-table td.subtotal-cell { text-align: right !important; font-size: 12px; color: var(--muted); }
     .eval-table tr.total-row {
       background: var(--primary);
@@ -2774,30 +2775,29 @@ function renderSelfEvalReference(dept, name, period) {
   if (!ev) return "";
   const emp = EMPLOYEES.find(e => e.dept === dept && e.name === name);
   const form = getFormForEmp(period, emp);
-  const rows = [];
-  (form.areas || []).forEach(area => (area.items || []).forEach(item => {
-    if (item.subItems && item.subItems.length) {
-      item.subItems.forEach((sub, subIdx) => {
-        const key = `${item.id}#${subIdx}`;
-        const sc = ev.scores ? ev.scores[key] : null;
-        const grade = selfGradeLabel(sc, sub.points, form.gradeRatios);
-        rows.push(`<tr>
-          <td style="font-weight:600;white-space:nowrap">${esc(item.name)}</td>
-          <td>${esc(sub.name)}</td>
-          <td style="text-align:center;font-weight:700;color:var(--primary)">${grade}</td>
-          <td style="text-align:right">${fmtScore(sc)} / ${sub.points}</td>
-        </tr>`);
-      });
-    } else {
-      const sc = ev.scores ? ev.scores[item.id] : null;
-      rows.push(`<tr>
-        <td style="font-weight:600">${esc(item.name)}</td>
-        <td>${esc(item.desc || "")}</td>
-        <td style="text-align:center">-</td>
-        <td style="text-align:right">${fmtScore(sc)}</td>
-      </tr>`);
-    }
-  }));
+  const totalMax = formTotalPoints(form);
+  // 평가자 본인 평가표와 동일한 형식(영역·항목·배점·A~E·점수)으로, 읽기 전용 렌더링
+  const formTable = `
+    <div style="overflow-x:auto">
+      <table class="eval-table">
+        <thead>
+          <tr>
+            <th style="width:80px">평가영역</th>
+            <th style="width:160px">평가 항목</th>
+            <th>세부 문항</th>
+            <th style="width:280px;text-align:center">A 매우우수 · B 우수 · C 보통 · D 미흡 · E 매우미흡</th>
+            <th style="width:70px;text-align:right">점수</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${renderFormItems(form, ev, false, { readOnly: true, idPrefix: "selfref-" })}
+          <tr class="total-row">
+            <td colspan="4">자기평가 총점 (${totalMax}점 만점)</td>
+            <td style="text-align:right;font-weight:700">${fmtScore(ev.total)}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>`;
   return `
     <div class="notice" style="background:#f0f9ff;border:1px solid #7dd3fc;border-radius:8px;padding:0;margin-bottom:14px;overflow:hidden">
       <div onclick="toggleSelfRef()" style="cursor:pointer;padding:10px 14px;background:#e0f2fe;font-weight:700;color:#075985;display:flex;justify-content:space-between;align-items:center">
@@ -2809,13 +2809,8 @@ function renderSelfEvalReference(dept, name, period) {
           <div style="font-weight:700;color:#075985;margin-bottom:6px">2026년 4월 ~ 9월 실적 및 업무 내용</div>
           <div style="white-space:pre-wrap;background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:10px 12px;font-size:13px;line-height:1.7">${esc(ev.comment || "(미작성)")}</div>
         </div>
-        <div style="font-weight:700;color:#075985;margin-bottom:6px">항목별 자기평가</div>
-        <div style="overflow-x:auto">
-          <table style="font-size:12px">
-            <thead><tr><th style="width:140px">항목</th><th>세부 문항</th><th style="width:60px">등급</th><th style="width:80px">점수</th></tr></thead>
-            <tbody>${rows.join("")}</tbody>
-          </table>
-        </div>
+        <div style="font-weight:700;color:#075985;margin-bottom:6px">항목별 자기평가 <span class="mini" style="font-weight:500;color:var(--muted)">(본인이 선택한 등급 · 읽기 전용)</span></div>
+        ${formTable}
       </div>
     </div>
   `;
@@ -3161,19 +3156,41 @@ function subItemGradeValue(maxPoints, gradeIndex, ratios) {
 //   sel:   현재 선택된 점수(없으면 null)
 //   dataAttrs: 각 pill 에 부여할 공통 data-* 문자열
 //   perValueAttrs: 등급 index 별 개별 data-* (선택)
-function renderGradePills(values, sel, dataAttrs, perValueAttrs) {
+function renderGradePills(values, sel, dataAttrs, perValueAttrs, readOnly) {
   const letters = ["A","B","C","D","E"];
   return values.map((sc, gi) => {
     const checked = sel !== null && sel !== undefined && Math.abs(sel - sc) < 0.05;
     const extraAttr = perValueAttrs ? perValueAttrs(gi, sc) : "";
     const bg = checked ? "background:var(--primary);color:#fff;border-color:var(--primary)" : "background:#fff;color:#374151";
-    return `<label class="score-cell ${checked ? 'checked' : ''}" ${dataAttrs} data-score="${sc}" ${extraAttr}
-             style="flex:1;text-align:center;padding:8px 4px;border:1px solid #d1d5db;border-radius:8px;font-weight:700;cursor:pointer;font-size:15px;user-select:none;${bg}">${letters[gi]}</label>`;
+    // 읽기 전용(자기평가 참고 패널)은 .score-cell 클래스를 쓰지 않아야 평가자 본인 폼의 클릭 핸들러와 충돌하지 않음
+    const cls = readOnly ? "score-cell-ro" : `score-cell ${checked ? "checked" : ""}`;
+    const cursor = readOnly ? "default" : "pointer";
+    const dim = (readOnly && !checked) ? "opacity:.35;" : "";
+    return `<label class="${cls}" ${readOnly ? "" : dataAttrs} data-score="${sc}" ${readOnly ? "" : extraAttr}
+             style="flex:1;text-align:center;padding:8px 4px;border:1px solid #d1d5db;border-radius:8px;font-weight:700;cursor:${cursor};font-size:15px;user-select:none;${dim}${bg}">${letters[gi]}</label>`;
   }).join("");
 }
 
+// 항목 소계 (하위 문항 점수 합계)
+function itemScoreSum(item, existing) {
+  if (!existing || !existing.scores) return null;
+  if (item.subItems && item.subItems.length) {
+    let sum = 0, any = false;
+    item.subItems.forEach((s, i) => {
+      const v = existing.scores[`${item.id}#${i}`];
+      if (v != null) { sum += Number(v) || 0; any = true; }
+    });
+    return any ? sum : null;
+  }
+  const v = existing.scores[item.id];
+  return v == null ? null : Number(v);
+}
+
 // selfMode=true 이면 배점·소계·점수 열을 숨기고 A~E 등급만 노출
-function renderFormItems(form, existing, selfMode) {
+// opts = { readOnly:true, idPrefix:"selfref-" } → 클릭 불가 + id 충돌 방지 (자기평가 참고 패널용)
+function renderFormItems(form, existing, selfMode, opts) {
+  const ro  = !!(opts && opts.readOnly);
+  const pfx = (opts && opts.idPrefix) || "";
   const rows = [];
   form.areas.forEach(area => {
     // 영역 rowspan 계산: 항목의 sub-item 수 합
@@ -3192,14 +3209,15 @@ function renderFormItems(form, existing, selfMode) {
           const sel = existing && existing.scores ? existing.scores[key] : null;
           const values = [0,1,2,3,4].map(gi => subItemGradeValue(sub.points, gi, form.gradeRatios));
           const pills = renderGradePills(values, sel,
-            `data-item="${item.id}" data-sub="${subIdx}" data-key="${key}" data-max="${sub.points}"`);
+            `data-item="${item.id}" data-sub="${subIdx}" data-key="${key}" data-max="${sub.points}"`, null, ro);
+          const sumTxt = ro ? `${fmtScore(itemScoreSum(item, existing))}/${maxPts}` : `<span id="${pfx}itemsum-${item.id}">-</span>/${maxPts}`;
           rows.push(`
             <tr>
               ${!areaRendered ? `<td class="area" rowspan="${areaRows}">${esc(area.area)}</td>` : ""}
-              ${subIdx === 0 ? `<td class="item" rowspan="${subItemRows}" style="vertical-align:middle"><div><b>${esc(item.name)}</b></div>${selfMode ? "" : `<div class="mini">${maxPts}점 · <span id="itemsum-${item.id}">-</span>/${maxPts}</div>`}</td>` : ""}
+              ${subIdx === 0 ? `<td class="item" rowspan="${subItemRows}" style="vertical-align:middle"><div><b>${esc(item.name)}</b></div>${selfMode ? "" : `<div class="mini">${maxPts}점 · ${sumTxt}</div>`}</td>` : ""}
               <td class="desc"><span class="m-ctx">${esc(area.area)} · ${esc(item.name)}${selfMode ? "" : ` (${sub.points}점)`}</span><b>${esc(sub.name)}</b>${selfMode ? "" : ` <span class="mini">(${sub.points}점)</span>`}</td>
               <td style="padding:6px 8px"><div style="display:flex;gap:6px">${pills}</div></td>
-              <td class="subtotal-cell" id="score-${key}" data-item="${item.id}" style="text-align:right;font-weight:600${selfMode ? ";display:none" : ""}">${sel ?? "-"}</td>
+              <td class="subtotal-cell" id="${pfx}score-${key}" data-item="${item.id}" style="text-align:right;font-weight:600${selfMode ? ";display:none" : ""}">${sel == null ? "-" : fmtScore(sel)}</td>
             </tr>`);
           areaRendered = true;
         });
@@ -3208,14 +3226,14 @@ function renderFormItems(form, existing, selfMode) {
         const scores = item.scores || [maxPts, Math.round(maxPts*0.9*10)/10, Math.round(maxPts*0.8*10)/10, Math.round(maxPts*0.7*10)/10, Math.round(maxPts*0.6*10)/10];
         const sel = existing && existing.scores ? existing.scores[item.id] : null;
         const pills = renderGradePills(scores, sel,
-          `data-item="${item.id}" data-key="${item.id}"`);
+          `data-item="${item.id}" data-key="${item.id}"`, null, ro);
         rows.push(`
           <tr>
             ${!areaRendered ? `<td class="area" rowspan="${areaRows}">${esc(area.area)}</td>` : ""}
             <td class="item"><div><b>${esc(item.name)}</b></div>${selfMode ? "" : `<div class="mini">${maxPts}점</div>`}</td>
             <td class="desc"><span class="m-ctx">${esc(area.area)} · ${esc(item.name)}${selfMode ? "" : ` (${maxPts}점)`}</span>${esc(item.desc || "")}</td>
             <td style="padding:6px 8px"><div style="display:flex;gap:6px">${pills}</div></td>
-            <td class="subtotal-cell" id="score-${item.id}" data-item="${item.id}" style="text-align:right;font-weight:600${selfMode ? ";display:none" : ""}">${sel ?? "-"}</td>
+            <td class="subtotal-cell" id="${pfx}score-${item.id}" data-item="${item.id}" style="text-align:right;font-weight:600${selfMode ? ";display:none" : ""}">${sel == null ? "-" : fmtScore(sel)}</td>
           </tr>`);
         areaRendered = true;
       }
