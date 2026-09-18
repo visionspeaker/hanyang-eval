@@ -3575,6 +3575,7 @@ function renderExecResultsInline(container) {
   headCells.push(`<th>이름</th>`);
   headCells.push(`<th style="width:80px">직급</th>`);
   headCells.push(`<th>부서</th>`);
+  headCells.push(`<th style="width:80px" title="본인이 제출한 자기평가 총점">자기평가</th>`);
   headCells.push(`<th style="width:70px">1차</th>`);
   headCells.push(`<th style="width:70px">2차</th>`);
   headCells.push(`<th style="width:70px">평균</th>`);
@@ -3587,6 +3588,7 @@ function renderExecResultsInline(container) {
     tds.push(`<td><b>${esc(r.empName)}</b></td>`);
     tds.push(`<td>${esc(r.empRank)}</td>`);
     tds.push(`<td>${esc(r.dept)}</td>`);
+    tds.push(`<td style="text-align:center">${renderSelfScoreCell(r)}</td>`);
     tds.push(`<td style="text-align:center">${r.score3 !== null ? r.score3.toFixed(1) : "-"}</td>`);
     tds.push(`<td style="text-align:center">${r.score4 ?? "-"}</td>`);
     tds.push(`<td style="text-align:center"><b>${r.avg !== null ? r.avg.toFixed(1) : "-"}</b></td>`);
