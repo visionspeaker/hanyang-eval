@@ -5050,13 +5050,14 @@ function renderExecResultTable(results) {
     </tr>
   `).join("");
   const selfDone = results.filter(r => r.selfSubmitted).length;
+  const selfTargetCnt = results.filter(r => !r.selfExempt).length;   // 자기평가 비대상 제외한 분모
   return `
     <div style="margin-top:24px;border-top:2px solid var(--primary);padding-top:16px">
       <div class="flex between">
         <h3 style="margin:0">임원 (부장·이사) <span class="muted">(${results.length}명)</span></h3>
         <div class="mini">S ${dist.S.length} · A ${dist.A.length} · B ${dist.B.length} · C ${dist.C.length}</div>
       </div>
-      <div class="mini" style="margin:4px 0 6px">등급 산정: ${esc(gradingModeLabel(results))} · 1차(조규오/임웅걸) + 2차(양정일) · 자기평가 제출 ${selfDone}/${results.length}명</div>
+      <div class="mini" style="margin:4px 0 6px">등급 산정: ${esc(gradingModeLabel(results))} · 1차(조규오/임웅걸) + 2차(양정일) · 자기평가 제출 ${selfDone}/${selfTargetCnt}명</div>
       ${renderDistBar(dist)}
       <div style="margin-top:10px;overflow-x:auto">
       <table>
@@ -5094,13 +5095,14 @@ function renderDeptResultTable(dept, results) {
     </tr>
   `).join("");
   const selfDone = results.filter(r => r.selfSubmitted).length;
+  const selfTargetCnt = results.filter(r => !r.selfExempt).length;   // 자기평가 비대상 제외한 분모
   return `
     <div style="margin-top:24px;border-top:1px solid var(--border);padding-top:16px">
       <div class="flex between">
         <h3 style="margin:0">${esc(dept)} (${results.length}명)</h3>
         <div class="mini">S ${dist.S.length} · A ${dist.A.length} · B ${dist.B.length} · C ${dist.C.length}</div>
       </div>
-      <div class="mini" style="margin:4px 0 6px">등급 산정: ${esc(gradingModeLabel(results))} · 자기평가 제출 ${selfDone}/${results.length}명</div>
+      <div class="mini" style="margin:4px 0 6px">등급 산정: ${esc(gradingModeLabel(results))} · 자기평가 제출 ${selfDone}/${selfTargetCnt}명</div>
       ${renderDistBar(dist)}
       <div style="margin-top:10px;overflow-x:auto">
       <table>
@@ -5128,8 +5130,10 @@ function renderAdjCell(r) {
   return `<span style="color:var(--muted)">0</span>`;
 }
 
-// 자기평가 점수 셀 (미제출/임시저장 상태도 구분 표시)
+// 자기평가 점수 셀 (비대상/미제출/임시저장 상태를 구분 표시)
 function renderSelfScoreCell(r) {
+  // 수습 제외 · 상무 이상 등 자기평가 대상이 아닌 인원은 "미제출"이 아니라 "비대상"
+  if (r.selfExempt)    return `<span class="chip" style="background:#f1f5f9;color:#64748b;font-size:10px" title="수습 기간 · 상무 이상 등 자기평가 비대상">비대상</span>`;
   if (r.selfSubmitted) return `<span style="color:#166534;font-weight:600">${fmtScore(r.selfScore)}</span>`;
   if (r.selfDraft)     return `<span class="chip draft" style="font-size:10px">임시저장</span>`;
   return `<span class="mini muted">미제출</span>`;
@@ -5682,7 +5686,7 @@ function cancelUpload() {
 function exportEvaluationsCsv() {
   const period = resolveViewPeriod();
   const depts = [...new Set(EMPLOYEES.filter(e => !isExecEmp(e)).map(e => e.dept))];
-  const selfCsv = r => r.selfSubmitted ? Number(fmtScore(r.selfScore)) : (r.selfDraft ? "임시저장" : "미제출");
+  const selfCsv = r => r.selfExempt ? "비대상" : (r.selfSubmitted ? Number(fmtScore(r.selfScore)) : (r.selfDraft ? "임시저장" : "미제출"));
   const finalAvg = r => (r.avgAdjusted != null ? r.avgAdjusted : r.avg);
   const rows = [["반기","부서","이름","직급","평가표","자기평가점수","1차점수","2차점수","임원1차점수","임원2차점수","원평균","가감점","최종평균","등급","부서내순위"]];
   depts.forEach(d => {
@@ -5788,6 +5792,7 @@ function computeDeptResults(dept, period) {
       selfScore: isEvalSubmitted(es) ? es.total : null,
       selfSubmitted: isEvalSubmitted(es),
       selfDraft: !!es && !isEvalSubmitted(es),
+      selfExempt: !canSelfEvaluate(e, period),   // 수습 제외 · 상무 이상 = 자기평가 비대상
       avg,                  // 원 평균 (변경 없음 · 감사 기록)
       adjustment,           // 가감점 합계
       avgAdjusted           // 등급 산정에 사용되는 조정 평균
@@ -5876,6 +5881,7 @@ function computeExecResults(period) {
       selfScore: isEvalSubmitted(rSelf) ? rSelf.total : null,
       selfSubmitted: isEvalSubmitted(rSelf),
       selfDraft: !!rSelf && !isEvalSubmitted(rSelf),
+      selfExempt: !canSelfEvaluate(e, period),   // 수습 제외 · 상무 이상 = 자기평가 비대상
       avg, adjustment, avgAdjusted
     };
   });
