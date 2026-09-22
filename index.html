@@ -1199,16 +1199,31 @@ function getEvalWindowStatus(periodId) {
   if (end && now > end)     return "closed";
   return "open";
 }
-function canSubmitEval(periodId) {
+// ★ 평가 기간 밖에서는 관리자(강유석) · 대표이사(양정일) 만 평가 가능.
+//   그 외 평가자·직원은 진입 / 임시저장 / 제출이 모두 차단된다.
+//   session.isAdmin = ADMIN_NAMES(강유석·양정일) 또는 임원 4차(대표이사) 계정
+function canEvaluateNow(periodId) {
+  if (session.isAdmin) return true;                                  // 관리자·대표이사 예외
+  if (isPeriodClosed(periodId || getActivePeriod())) return false;    // 반기 자체가 마감
   const st = getEvalWindowStatus(periodId);
-  return st === "open" || st === "always" || !!session.isAdmin;
+  return st === "open" || st === "always";
 }
-function canDraftEval(periodId) {
-  // 마감된 반기(status) 또는 제출 마감 후에는 임시저장도 불가 (관리자 제외)
-  if (isPeriodClosed(periodId || getActivePeriod()) && !session.isAdmin) return false;
+function canSubmitEval(periodId) { return canEvaluateNow(periodId); }
+function canDraftEval(periodId)  { return canEvaluateNow(periodId); }
+// 평가 차단 시 안내 문구
+function evalBlockedMessage(periodId) {
+  const w = getSubmissionWindow(periodId);
   const st = getEvalWindowStatus(periodId);
-  if (st === "closed" && !session.isAdmin) return false;
-  return true;
+  if (isPeriodClosed(periodId || getActivePeriod())) {
+    return "현재 반기가 마감되어 평가를 진행할 수 없습니다.";
+  }
+  if (st === "before") {
+    return `아직 평가 기간이 시작되지 않았습니다.\n평가 시작: ${fmtDateTime(w.opensAt)}`;
+  }
+  if (st === "closed") {
+    return `평가 기간이 종료되었습니다.\n마감: ${fmtDateTime(w.closesAt)}`;
+  }
+  return "지금은 평가를 진행할 수 없습니다.";
 }
 // 평가 상태 결정: submittedAt 이 비어 있으면 "임시저장", 채워져 있으면 "제출완료"
 function isEvalSubmitted(ev) {
@@ -1221,14 +1236,16 @@ function renderSubmissionWindowBanner(periodId) {
   const w = getSubmissionWindow(periodId);
   const openTxt = fmtDateTime(w.opensAt);
   const closeTxt = fmtDateTime(w.closesAt);
+  const adminNote = session.isAdmin
+    ? `<div class="mini" style="margin-top:4px;font-weight:400">※ 관리자·대표이사 계정은 기간과 관계없이 평가할 수 있습니다.</div>` : "";
   if (st === "before") {
-    return `<div class="notice" style="background:#fef3c7;border:1px solid #fbbf24;color:#78350f;padding:10px 12px;border-radius:8px;margin-bottom:12px;font-weight:600">🔒 평가 미리보기 모드 · 제출은 <b>${esc(openTxt)}</b> 부터 가능합니다. 지금은 임시저장만 됩니다.</div>`;
+    return `<div class="notice" style="background:#fef3c7;border:1px solid #fbbf24;color:#78350f;padding:10px 12px;border-radius:8px;margin-bottom:12px;font-weight:600">🔒 평가 기간 전입니다. 평가는 <b>${esc(openTxt)}</b> 부터 가능합니다.${adminNote}</div>`;
   }
   if (st === "open") {
     return `<div class="notice" style="background:#dcfce7;border:1px solid #86efac;color:#166534;padding:10px 12px;border-radius:8px;margin-bottom:12px;font-weight:600">🟢 평가 진행 중 · 마감 <b>${esc(closeTxt)}</b> 까지 제출 가능합니다.</div>`;
   }
   if (st === "closed") {
-    return `<div class="notice" style="background:#fee2e2;border:1px solid #fca5a5;color:#991b1b;padding:10px 12px;border-radius:8px;margin-bottom:12px;font-weight:600">🔴 평가 제출 기간이 종료되었습니다. (마감 <b>${esc(closeTxt)}</b>) 조회만 가능합니다.</div>`;
+    return `<div class="notice" style="background:#fee2e2;border:1px solid #fca5a5;color:#991b1b;padding:10px 12px;border-radius:8px;margin-bottom:12px;font-weight:600">🔴 평가 기간이 종료되었습니다. (마감 <b>${esc(closeTxt)}</b>) 더 이상 평가를 진행할 수 없습니다. 문의: 담당자 내선 ${esc(HR_EXT)}${adminNote}</div>`;
   }
   return "";
 }
@@ -2009,6 +2026,7 @@ function renderUserHome() {
   const showEval = roles.length > 0;
   const showAdmin = isAdminUser();
   const selfDone = showSelf && hasSubmittedSelfEval(emp.dept, emp.name, period);
+  const windowOpen = canEvaluateNow(period);   // 평가 기간 (관리자·대표이사는 항상 true)
 
   const cards = [];
   if (showSelf) {
@@ -2021,7 +2039,11 @@ function renderUserHome() {
           </svg>
         </span>
         <h3>자기평가</h3>
-        <p>${selfDone ? `<span style="color:var(--success);font-weight:700">✅ 제출 완료</span> · 🔒 수정 불가<br><span class="mini" style="color:var(--muted)">수정 요청: 담당자 내선 ${esc(HR_EXT)}</span>` : '본인 평가 작성 (미제출)'}</p>
+        <p>${selfDone
+            ? `<span style="color:var(--success);font-weight:700">✅ 제출 완료</span> · 🔒 수정 불가<br><span class="mini" style="color:var(--muted)">수정 요청: 담당자 내선 ${esc(HR_EXT)}</span>`
+            : (windowOpen
+                ? '본인 평가 작성 (미제출)'
+                : `<span style="color:var(--danger);font-weight:700">🔒 평가 기간 아님</span><br><span class="mini" style="color:var(--muted)">문의: 담당자 내선 ${esc(HR_EXT)}</span>`)}</p>
       </div>`);
   }
   if (showEval) {
@@ -2081,7 +2103,9 @@ function renderUserHome() {
       </div>
       <div class="hero-sub">${esc(periodLabel(getActivePeriod()))} · ${esc(session.userName)}${session.userRank ? " " + esc(session.userRank) : ""} 님</div>
     </div>
-    ${showSelf && !selfDone ? `<div class="notice" style="max-width:900px;margin:0 auto 14px;background:#fef3c7;border:1px solid #fbbf24;color:#78350f;padding:10px 14px;border-radius:8px;font-weight:600">📝 자기평가를 먼저 제출해 주세요. 자기평가가 완료되어야 1차·2차 평가자가 평가를 진행할 수 있습니다.</div>` : ``}
+    ${!windowOpen
+      ? `<div class="notice" style="max-width:900px;margin:0 auto 14px;background:#fee2e2;border:1px solid #fca5a5;color:#991b1b;padding:10px 14px;border-radius:8px;font-weight:600">🔒 ${esc(evalBlockedMessage(period)).replace(/\n/g, " · ")} — 평가를 진행할 수 없습니다. 문의: 담당자 내선 ${esc(HR_EXT)}</div>`
+      : (showSelf && !selfDone ? `<div class="notice" style="max-width:900px;margin:0 auto 14px;background:#fef3c7;border:1px solid #fbbf24;color:#78350f;padding:10px 14px;border-radius:8px;font-weight:600">📝 자기평가를 먼저 제출해 주세요. 자기평가가 완료되어야 1차·2차 평가자가 평가를 진행할 수 있습니다.</div>` : ``)}
     <div class="landing-wrap">
       ${cards.join("")}
     </div>
@@ -2626,10 +2650,11 @@ function renderSelfEvalForm() {
   const form = getFormForEmp(period, emp);
   const existing = getEvaluation(emp.dept, emp.name, SELF_ROUND, period);
   const submitted = isEvalSubmitted(existing);
-  const closed = isPeriodClosed(period) && !session.isAdmin;
+  // 평가 기간 밖이면 자기평가도 작성 불가 (관리자 · 대표이사 제외)
+  const windowBlocked = !canEvaluateNow(period);
   // 제출 완료된 자기평가는 누구도 본인 화면에서 수정 불가 (관리자 포함).
   // 수정이 필요하면 관리자 대시보드 → 자기평가 현황 에서 "잠금 해제" 후 본인이 다시 작성.
-  const locked = submitted;
+  const locked = submitted || windowBlocked;
   $app().innerHTML = `
     <div class="card">
       <div class="flex between">
@@ -2644,13 +2669,21 @@ function renderSelfEvalForm() {
       </div>
     </div>
     <div class="card">
-      ${locked
+      ${submitted
         ? `<div class="notice" style="background:#fef2f2;border:1px solid #fca5a5;color:#991b1b;margin-bottom:12px;padding:14px 16px;border-radius:8px">
              <div style="font-size:15px;font-weight:800;margin-bottom:6px">🔒 제출이 완료되어 수정할 수 없습니다</div>
              <div style="font-size:13.5px;line-height:1.7">
                <b>${esc(emp.name)}</b> 님의 자기평가는 <b>${esc(fmtDateTime(existing.submittedAt))}</b>에 제출 완료되었습니다.<br>
                제출된 자기평가는 <b>본인이 수정할 수 없습니다.</b><br>
                수정을 원하시면 <b>담당자에게 요청</b>해 주세요. &nbsp;☎ <b>내선 ${esc(HR_EXT)}</b>
+             </div>
+           </div>`
+        : windowBlocked
+        ? `<div class="notice" style="background:#fef2f2;border:1px solid #fca5a5;color:#991b1b;margin-bottom:12px;padding:14px 16px;border-radius:8px">
+             <div style="font-size:15px;font-weight:800;margin-bottom:6px">🔒 평가 기간이 아닙니다</div>
+             <div style="font-size:13.5px;line-height:1.7">
+               ${esc(evalBlockedMessage(period)).replace(/\n/g, "<br>")}<br>
+               자기평가 작성·제출이 불가합니다. 문의는 <b>담당자</b>에게 해 주세요. &nbsp;☎ <b>내선 ${esc(HR_EXT)}</b>
              </div>
            </div>`
         : (existing
@@ -2682,10 +2715,14 @@ function renderSelfEvalForm() {
         </div>
         <div class="flex between" style="margin-top:20px">
           <button class="secondary" type="button" onclick="go('home')">${locked ? "← 홈으로" : "취소"}</button>
-          ${locked ? `<span class="mini" style="color:#991b1b;font-weight:700">🔒 제출 완료 · 수정 불가 (수정 요청: 담당자 내선 ${esc(HR_EXT)})</span>` : `
+          ${locked
+            ? `<span class="mini" style="color:#991b1b;font-weight:700">${submitted
+                ? `🔒 제출 완료 · 수정 불가 (수정 요청: 담당자 내선 ${esc(HR_EXT)})`
+                : `🔒 평가 기간 종료 · 작성 불가 (문의: 담당자 내선 ${esc(HR_EXT)})`}</span>`
+            : `
           <div class="flex" style="gap:8px">
-            <button id="btn-eval-draft" class="secondary" type="button" onclick="submitSelfEval('draft')" ${closed ? "disabled" : ""} title="작성 중인 내용을 임시로 저장 (제출 전까지 수정 가능)">💾 임시저장</button>
-            <button id="btn-eval-submit" type="submit" ${closed ? "disabled" : ""} title="제출하면 수정할 수 없습니다">📤 제출하기</button>
+            <button id="btn-eval-draft" class="secondary" type="button" onclick="submitSelfEval('draft')" title="작성 중인 내용을 임시로 저장 (제출 전까지 수정 가능)">💾 임시저장</button>
+            <button id="btn-eval-submit" type="submit" title="제출하면 수정할 수 없습니다">📤 제출하기</button>
           </div>`}
         </div>
       </form>
@@ -2708,8 +2745,10 @@ async function submitSelfEval(mode) {
     errEl.innerHTML = `<div class="notice err">${msg}</div>`;
     window.scrollTo({top:0, behavior:"smooth"});
   };
-  if (isPeriodClosed(period) && !session.isAdmin) {
-    return showErr("현재 반기가 마감된 상태입니다. 관리자에게 문의해 주세요.");
+  // 평가 기간 밖에서는 자기평가 저장·제출 모두 차단 (관리자 · 대표이사 제외)
+  if (!canEvaluateNow(period)) {
+    alert(`🔒 평가 기간이 아닙니다.\n\n${evalBlockedMessage(period)}\n\n문의: 담당자 내선 ${HR_EXT}`);
+    return showErr(`평가 기간이 아니므로 자기평가를 저장할 수 없습니다. (문의: 담당자 내선 ${esc(HR_EXT)})`);
   }
   // 이미 제출 완료된 자기평가는 수정 차단 (관리자 포함 · 잠금 해제는 관리자 대시보드에서만)
   const already = getEvaluation(emp.dept, emp.name, SELF_ROUND, period);
@@ -3065,6 +3104,11 @@ function startEvalForm(dept, name, assignedRound) {
     alert(`${name}은(는) 수습 기간으로 이번 반기 평가 대상에서 제외됩니다.`);
     return;
   }
+  // 평가 기간 밖에는 진입 자체를 차단 (관리자 · 대표이사 제외)
+  if (!canEvaluateNow(activePeriod)) {
+    alert(`🔒 평가 기간이 아닙니다.\n\n${evalBlockedMessage(activePeriod)}\n\n문의: 담당자 내선 ${HR_EXT}`);
+    return;
+  }
   // 자기평가 선행 필수: 대상자가 자기평가를 제출해야 1·2차 평가 가능
   if (emp && canSelfEvaluate(emp, activePeriod) && !hasSubmittedSelfEval(dept, name, activePeriod) && !session.isAdmin) {
     alert(`${name} 님이 아직 자기평가를 제출하지 않았습니다.\n\n자기평가가 제출되어야 평가를 진행할 수 있습니다.`);
@@ -3333,21 +3377,10 @@ async function submitEval(mode) {
     errEl.innerHTML = `<div class="notice err">${msg}</div>`;
     window.scrollTo({top:0, behavior:"smooth"});
   };
-  // 안전장치: 반기 마감(status closed)
-  if (isPeriodClosed(activePeriod) && !session.isAdmin) {
-    return showErr("현재 반기가 마감된 상태입니다. 관리자에게 문의해 주세요.");
-  }
-  // 평가 창(제출 기간) 검증
-  const winStatus = getEvalWindowStatus(activePeriod);
-  if (mode === "submit" && !canSubmitEval(activePeriod)) {
-    const w = getSubmissionWindow(activePeriod);
-    if (winStatus === "before")
-      return showErr(`평가 제출 기간이 아직 시작되지 않았습니다. <b>${esc(fmtDateTime(w.opensAt))}</b> 부터 제출 가능합니다. 지금은 임시저장만 가능해요.`);
-    if (winStatus === "closed")
-      return showErr(`평가 제출 기간이 종료되었습니다. (마감: <b>${esc(fmtDateTime(w.closesAt))}</b>) 수정이 필요하면 관리자에게 문의해 주세요.`);
-  }
-  if (mode === "draft" && !canDraftEval(activePeriod)) {
-    return showErr("현재는 임시저장도 불가한 상태입니다. 관리자에게 문의해 주세요.");
+  // 평가 기간 검증 — 기간 밖에서는 임시저장·제출 모두 차단 (관리자 · 대표이사 제외)
+  if (!canEvaluateNow(activePeriod)) {
+    alert(`🔒 평가 기간이 아닙니다.\n\n${evalBlockedMessage(activePeriod)}\n\n문의: 담당자 내선 ${HR_EXT}`);
+    return showErr(`${esc(evalBlockedMessage(activePeriod)).replace(/\n/g, " ")} 평가 저장·제출이 불가합니다. (문의: 담당자 내선 ${esc(HR_EXT)})`);
   }
   const scores = {};
   let missing = [];
