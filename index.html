@@ -5304,7 +5304,7 @@ function openResultDetail(dept, name) {
         </div>
         <div class="rd-cmt-lbl">${esc(cmtLabel)}</div>
         ${cmt ? `<div class="rd-cmt">${esc(cmt)}</div>`
-              : `<div class="rd-cmt empty">(작성된 ${x.round === SELF_ROUND ? "실적 내용" : "총평·코멘트"}이 없습니다)</div>`}
+              : `<div class="rd-cmt empty">(작성된 ${x.round === SELF_ROUND ? "실적 내용이" : "총평·코멘트가"} 없습니다)</div>`}
       </div>`;
   }).join("");
 
