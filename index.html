@@ -740,6 +740,30 @@ const EXEC_TARGETS = {
   ]
 };
 
+// ── 임원 평가 3단계 구조 (대표이사 지시, 2026-H2~) ──
+//   1차: 김소윤·홍두영·최재웅·이병수   (차수 키: "임원1차-{이름}")
+//   2차: 조규오·임웅걸·이석원          (기존 "3차-{이름}" 키를 그대로 사용 → 기존 점수 보존)
+//   3차: 양정일 대표이사               (기존 "4차" 키를 그대로 사용)
+const EXEC_R1_ASSIGN = {
+  "김소윤": ["강유석"],
+  "홍두영": ["정택기", "조민웅"],
+  "최재웅": ["송지훈", "양정민", "전기훈", "노영훈", "이병수"],
+  "이병수": ["유창근", "최인태", "정영교"]
+};
+const EXEC_R1_ROUNDS = Object.keys(EXEC_R1_ASSIGN).map(n => "임원1차-" + n);
+const EXEC_R2_ROUNDS = ["3차-조규오", "3차-임웅걸", "3차-이석원"];
+const EXEC_R3_ROUND  = "4차";
+function execR1RoundOf(name) { return "임원1차-" + name; }
+// 임원 1차 대상 목록을 EXEC_TARGETS 에 채운다 (이름 → 실제 직원 레코드)
+function buildExecR1Targets() {
+  Object.keys(EXEC_R1_ASSIGN).forEach(evName => {
+    EXEC_TARGETS[execR1RoundOf(evName)] = EXEC_R1_ASSIGN[evName]
+      .map(n => EMPLOYEES.find(e => e.name === n && (e.rank === "부장" || e.rank === "이사")))
+      .filter(Boolean)
+      .map(e => ({ dept: e.dept, name: e.name }));
+  });
+}
+
 // 3차/4차 평가 대상 집합 (부서|이름 키)
 const EXEC_KEY = e => `${e.dept}|${e.name}`;
 const EXEC_SET = new Set();
@@ -749,7 +773,8 @@ const EXEC_SET = new Set();
 const SENIOR_RANK_SET = new Set(["부장","이사","상무","전무","부사장","대표이사","회장"]);
 function isExecEmp(emp) { return !!(emp && SENIOR_RANK_SET.has(emp.rank)); }
 function isExecRound(round) {
-  return round === "4차" || (typeof round === "string" && round.startsWith("3차"));
+  const r = String(round || "");
+  return r === "4차" || r.startsWith("3차") || r.startsWith("임원1차-");
 }
 
 // 서버 employees 명단으로 EMPLOYEES / EXEC_TARGETS / EXEC_SET 재구성
@@ -784,12 +809,14 @@ function rebuildFromEmployees(serverEmps) {
   EXEC_TARGETS["3차-이석원"] = execEmps.filter(isSw).map(e => ({dept: e.dept, name: e.name}));
   EXEC_TARGETS["3차-임웅걸"] = execEmps.filter(e => !isKq(e) && !isSw(e)).map(e => ({dept: e.dept, name: e.name}));
   EXEC_TARGETS["4차"] = execEmps.map(e => ({dept: e.dept, name: e.name}));
+  buildExecR1Targets();
   // EXEC_SET 재계산
   EXEC_SET.clear();
   Object.values(EXEC_TARGETS).forEach(arr => arr.forEach(t => EXEC_SET.add(t.dept + "|" + t.name)));
 }
 // 초기: 하드코딩 EXEC_TARGETS 로 EXEC_SET 세팅 (서버 로드 실패 대비)
 (function() {
+  buildExecR1Targets();
   Object.values(EXEC_TARGETS).forEach(arr => arr.forEach(t => EXEC_SET.add(t.dept + "|" + t.name)));
 })();
 
@@ -1250,6 +1277,8 @@ function getEvalWindowStatus(periodId) {
 //   session.isAdmin = ADMIN_NAMES(강유석·양정일) 또는 임원 4차(대표이사) 계정
 function canEvaluateNow(periodId) {
   if (session.isAdmin) return true;                                  // 관리자·대표이사 예외
+  // 임원 평가(1·2·3차)는 대표이사 지시로 추가된 절차 — 일반 평가 기간과 별개로 진행
+  if (session.evaluatorDept === "임원") return !isPeriodClosed(periodId || getActivePeriod());
   if (isPeriodClosed(periodId || getActivePeriod())) return false;    // 반기 자체가 마감
   const st = getEvalWindowStatus(periodId);
   return st === "open" || st === "always";
@@ -1762,7 +1791,8 @@ const NO_SELF_EVAL_RANKS = new Set(["상무", "전무", "부사장", "대표이�
 // 자기평가 저장용 라운드 키
 const SELF_ROUND = "자기";
 // 임원 1차(3차) 평가 차수 — 평가자 추가 시 이 배열에만 넣으면 집계·보고서에 모두 반영됨
-const EXEC_FIRST_ROUNDS = ["3차-조규오", "3차-임웅걸", "3차-이석원"];
+// (구) 임원 1차 = 현재 임원 2차. 기존 참조 호환용 별칭
+const EXEC_FIRST_ROUNDS = EXEC_R2_ROUNDS;
 // 자기평가 수정 요청 등 문의처 (담당자 내선)
 const HR_EXT = "5704";
 
@@ -2993,10 +3023,12 @@ function renderEvalHome() {
 // 내부 라운드 키 → 사용자 표시 문자열
 // 임원(부장·이사) 평가는 3차(부사장) → 1차, 4차(대표이사) → 2차 로 재라벨
 function displayRound(round) {
-  if (!round) return "";
-  if (typeof round === "string" && round.startsWith("3차")) return "1차";
-  if (round === "4차") return "2차";
-  return round;
+  const r = String(round || "");
+  if (!r) return "";
+  if (r.startsWith("임원1차-")) return "1차";   // 임원 1차 (김소윤·홍두영·최재웅·이병수)
+  if (r.startsWith("3차"))      return "2차";   // 임원 2차 (조규오·임웅걸·이석원)
+  if (r === "4차")              return "3차";   // 임원 3차 (양정일 대표이사)
+  return r;
 }
 
 function setEvalTab(which) {
@@ -3515,8 +3547,10 @@ function resolveViewPeriod() {
 function getViewerRole() {
   if (session.isAdmin) return "admin";
   if (session.evaluatorDept === "임원") {
-    if (session.evaluatorRound === "4차") return "exec-2nd";
-    if (String(session.evaluatorRound || "").startsWith("3차")) return "exec-1st";
+    const r = String(session.evaluatorRound || "");
+    if (r === "4차") return "exec-2nd";                 // 대표이사 (임원 3차)
+    if (r.startsWith("3차")) return "exec-1st";         // 부사장·전무 (임원 2차)
+    if (r.startsWith("임원1차-")) return "exec-r1";      // 임원 1차 (상무·이사)
   }
   if (session.evaluatorDept === "인사/안전/교육") return "hr-safety";
   if (session.evaluatorDept && session.evaluatorRound === "1차") return "dept-1st";
@@ -3524,11 +3558,13 @@ function getViewerRole() {
   return "guest";
 }
 // 컬럼/영역 표시 여부 헬퍼
-function canSeeSecondScore(role) { return role !== "dept-1st"; }              // dept-1st 만 2차 숨김
-function canSeeAverage(role)     { return role !== "dept-1st"; }              // dept-1st 는 평균도 무의미
+// 1차 평가자(부서 1차 · 임원 1차)는 본인 점수 외 다른 차수·평균·순위를 보지 않는다.
+const FIRST_ROUND_ROLES = new Set(["dept-1st", "exec-r1"]);
+function canSeeSecondScore(role) { return !FIRST_ROUND_ROLES.has(role); }
+function canSeeAverage(role)     { return !FIRST_ROUND_ROLES.has(role); }
 function canSeeGrade(role)       { return role === "admin" || role === "exec-1st" || role === "exec-2nd"; }
 // 부서 순위: 평균을 볼 수 있는 사람이면 순위도 열람 (1차 평가자는 제외)
-function canSeeRank(role)        { return role !== "dept-1st" && role !== "guest"; }
+function canSeeRank(role)        { return !FIRST_ROUND_ROLES.has(role) && role !== "guest"; }
 function canSeeDistBar(role)     { return canSeeGrade(role); }                // S/A/B/C 분포 바 = 등급 정보
 // 가감점(근태·안전·교육) 조정 결과 열람 권한 — 관리자 / 인사·안전·교육 담당만
 function canSeeAdjustment(role)       { return role === "admin" || role === "hr-safety"; }
@@ -3653,6 +3689,8 @@ function renderExecResultsInline(container) {
   const role = getViewerRole();
   const showGrade = canSeeGrade(role);
   const showDist  = canSeeDistBar(role);
+  const showSec   = canSeeSecondScore(role);   // 임원 1차 평가자는 2·3차 비공개
+  const showAvg   = canSeeAverage(role);
 
   const headCells = [];
   if (showGrade) headCells.push(`<th style="width:50px">순위</th>`);
@@ -3660,9 +3698,10 @@ function renderExecResultsInline(container) {
   headCells.push(`<th style="width:80px">직급</th>`);
   headCells.push(`<th>부서</th>`);
   headCells.push(`<th style="width:80px" title="본인이 제출한 자기평가 총점">자기평가</th>`);
-  headCells.push(`<th style="width:70px">1차</th>`);
-  headCells.push(`<th style="width:70px">2차</th>`);
-  headCells.push(`<th style="width:70px">평균</th>`);
+  headCells.push(`<th style="width:66px" title="임원 1차 (김소윤·홍두영·최재웅·이병수)">1차</th>`);
+  if (showSec) headCells.push(`<th style="width:66px" title="임원 2차 (조규오·임웅걸·이석원)">2차</th>`);
+  if (showSec) headCells.push(`<th style="width:66px" title="임원 3차 (양정일 대표이사)">3차</th>`);
+  if (showAvg) headCells.push(`<th style="width:70px">평균</th>`);
   if (showGrade) headCells.push(`<th style="width:70px">등급</th>`);
   const colSpan = headCells.length;
 
@@ -3673,9 +3712,10 @@ function renderExecResultsInline(container) {
     tds.push(`<td>${esc(r.empRank)}</td>`);
     tds.push(`<td>${esc(r.dept)}</td>`);
     tds.push(`<td style="text-align:center">${renderSelfScoreCell(r)}</td>`);
-    tds.push(`<td style="text-align:center">${r.score3 !== null ? r.score3.toFixed(1) : "-"}</td>`);
-    tds.push(`<td style="text-align:center">${r.score4 ?? "-"}</td>`);
-    tds.push(`<td style="text-align:center"><b>${r.avg !== null ? r.avg.toFixed(1) : "-"}</b></td>`);
+    tds.push(`<td style="text-align:center">${r.score1 != null ? r.score1.toFixed(1) : "-"}</td>`);
+    if (showSec) tds.push(`<td style="text-align:center">${r.score3 != null ? r.score3.toFixed(1) : "-"}</td>`);
+    if (showSec) tds.push(`<td style="text-align:center">${r.score4 != null ? r.score4.toFixed(1) : "-"}</td>`);
+    if (showAvg) tds.push(`<td style="text-align:center"><b>${r.avg !== null ? r.avg.toFixed(1) : "-"}</b></td>`);
     if (showGrade) tds.push(`<td style="text-align:center">${r.grade ? `<span class="chip ${r.grade.toLowerCase()}">${r.grade}</span>` : "-"}</td>`);
     return `<tr class="res-row" onclick="openResultDetail('${esc(r.dept)}','${esc(r.empName)}')" title="클릭하면 평가 결과 전문을 볼 수 있습니다">${tds.join("")}</tr>`;
   }).join("");
@@ -4120,7 +4160,8 @@ function renderAdminPeriods(body) {
   const evs = getEvaluations();
   const totalTargets =
     EMPLOYEES.filter(e => !isExecEmp(e)).length * 2  // 일반 직원 × (1차+2차) 대략
-    + EXEC_FIRST_ROUNDS.reduce((n, r) => n + ((EXEC_TARGETS[r] || []).length), 0) + EXEC_TARGETS["4차"].length;
+    + EXEC_R1_ROUNDS.reduce((n, r) => n + ((EXEC_TARGETS[r] || []).length), 0)
+    + EXEC_R2_ROUNDS.reduce((n, r) => n + ((EXEC_TARGETS[r] || []).length), 0) + EXEC_TARGETS["4차"].length;
   const rows = s.periods.map(p => {
     const cntAll = evs.filter(e => (e.period||"2026-H1") === p.id).length;
     const closedDate = p.closedAt ? new Date(p.closedAt).toLocaleDateString('ko-KR') : "";
@@ -5125,8 +5166,9 @@ function renderExecResultTable(results) {
       <td>${esc(r.empRank)}</td>
       <td>${esc(r.dept)}</td>
       <td style="text-align:center">${renderSelfScoreCell(r)}</td>
-      <td style="text-align:center">${r.score3 !== null ? r.score3.toFixed(1) : "-"}</td>
-      <td style="text-align:center">${r.score4 ?? "-"}</td>
+      <td style="text-align:center">${r.score1 != null ? r.score1.toFixed(1) : "-"}</td>
+      <td style="text-align:center">${r.score3 != null ? r.score3.toFixed(1) : "-"}</td>
+      <td style="text-align:center">${r.score4 != null ? r.score4.toFixed(1) : "-"}</td>
       <td style="text-align:center">${r.avg !== null ? r.avg.toFixed(1) : "-"}</td>
       <td style="text-align:center">${renderAdjCell(r)}</td>
       <td style="text-align:center"><b>${r.avgAdjusted !== null && r.avgAdjusted !== undefined ? r.avgAdjusted.toFixed(1) : (r.avg !== null ? r.avg.toFixed(1) : "-")}</b></td>
@@ -5141,20 +5183,22 @@ function renderExecResultTable(results) {
         <h3 style="margin:0">임원 (부장·이사) <span class="muted">(${results.length}명)</span></h3>
         <div class="mini">S ${dist.S.length} · A ${dist.A.length} · B ${dist.B.length} · C ${dist.C.length}</div>
       </div>
-      <div class="mini" style="margin:4px 0 6px">등급 산정: ${esc(gradingModeLabel(results))} · 1차(조규오/임웅걸) + 2차(양정일) · 자기평가 제출 ${selfDone}/${selfTargetCnt}명</div>
+      <div class="mini" style="margin:4px 0 6px">등급 산정: ${esc(gradingModeLabel(results))} · 1차(상무·이사) + 2차(부사장·전무) + 3차(대표이사) · 자기평가 제출 ${selfDone}/${selfTargetCnt}명</div>
       ${renderDistBar(dist)}
       <div style="margin-top:10px;overflow-x:auto">
       <table>
         <thead><tr>
           <th style="width:50px">순위</th><th>이름</th><th>직급</th><th>부서</th>
-          <th style="width:70px" title="본인이 제출한 자기평가 총점">자기</th>
-          <th style="width:70px">1차</th><th style="width:70px">2차</th>
-          <th style="width:76px" title="1차·2차 점수의 평균 (가감점 반영 전)">원평균</th>
+          <th style="width:66px" title="본인이 제출한 자기평가 총점">자기</th>
+          <th style="width:60px" title="임원 1차 (김소윤·홍두영·최재웅·이병수)">1차</th>
+          <th style="width:60px" title="임원 2차 (조규오·임웅걸·이석원)">2차</th>
+          <th style="width:60px" title="임원 3차 (양정일 대표이사)">3차</th>
+          <th style="width:76px" title="1·2·3차 점수의 평균 (가감점 반영 전)">원평균</th>
           <th style="width:76px" title="근태 · 안전 · 교육 가감점 합계">가감점</th>
           <th style="width:82px" title="원평균 + 가감점 · 등급 산정 기준">최종 평균</th>
           <th style="width:70px">등급</th>
         </tr></thead>
-        <tbody>${rows || `<tr><td colspan="11" style="text-align:center" class="muted">아직 결과가 없습니다.</td></tr>`}</tbody>
+        <tbody>${rows || `<tr><td colspan="12" style="text-align:center" class="muted">아직 결과가 없습니다.</td></tr>`}</tbody>
       </table>
       </div>
     </div>
@@ -5208,24 +5252,28 @@ function renderDeptResultTable(dept, results) {
 
 /* ================= 평가 결과 상세 팝업 ================= */
 // 팝업에 노출할 차수 순서
-const RD_ROUND_ORDER = ["자기", "1차", "2차", "3차-조규오", "3차-임웅걸", "3차-이석원", "4차"];
+const RD_ROUND_ORDER = ["자기", "1차", "2차"].concat(EXEC_R1_ROUNDS, EXEC_R2_ROUNDS, [EXEC_R3_ROUND]);
 // 열람 권한: 보는 사람(role)별로 볼 수 있는 차수
 //   관리자 · 대표이사 · 부사장 → 전부
 //   부서 2차 평가자 · 인사/안전/교육 → 자기 + 1차 + 2차
 //   부서 1차 평가자 → 자기 + 1차 만
 function rdCanSeeRound(role, round) {
-  const isExecRound = round === "4차" || String(round).startsWith("3차");
+  const execR = isExecRound(round);
   if (role === "admin" || role === "exec-1st" || role === "exec-2nd") return true;
-  if (isExecRound) return false;                       // 임원 평가 차수는 임원·관리자만
+  // 임원 1차 평가자 → 자기평가 + 본인이 매긴 임원 1차만
+  if (role === "exec-r1") return round === SELF_ROUND || EXEC_R1_ROUNDS.indexOf(round) >= 0;
+  if (execR) return false;                             // 임원 평가 차수는 임원·관리자만
   if (role === "dept-1st") return round === SELF_ROUND || round === "1차";
   if (role === "dept-2nd" || role === "hr-safety") return true;
   return false;
 }
 function rdRoundLabel(round) {
-  if (round === SELF_ROUND) return "자기평가";
-  if (String(round).startsWith("3차")) return "임원 1차";
-  if (round === "4차") return "임원 2차 (최종)";
-  return `${round} 평가`;
+  const r = String(round || "");
+  if (r === SELF_ROUND) return "자기평가";
+  if (r.startsWith("임원1차-")) return "임원 1차";
+  if (r.startsWith("3차")) return "임원 2차";
+  if (r === "4차") return "임원 3차 (최종)";
+  return `${r} 평가`;
 }
 
 function openResultDetail(dept, name) {
@@ -6099,28 +6147,34 @@ function computeDeptResults(dept, period) {
 }
 
 /* --- 임원(부장·이사) 평가 결과 계산 ---
- * 3차(조규오 OR 임웅걸), 4차(양정일) 점수를 평균해서 avg 산출.
- * 11명 전체를 하나의 풀로 S20/A30/B40/C10 상대평가.
+ * 1차(김소윤·홍두영·최재웅·이병수) + 2차(조규오·임웅걸·이석원) + 3차(양정일 대표이사)
+ * 제출된 차수만 평균해서 avg 산출. 11명 전체를 하나의 풀로 S20/A30/B40/C10 상대평가.
  */
 function computeExecResults(period) {
-  // 임원 평가(3차·4차) 대상은 부장·이사만 (상무 이상은 평가 대상 아님)
+  // 임원 평가 대상은 부장·이사만 (상무 이상은 평가 대상 아님)
   const emps = EMPLOYEES.filter(e => e.rank === "부장" || e.rank === "이사");
   const evals = getEvaluationsByPeriod(period);
-  const rows = emps.map(e => {
-    const r4   = evals.find(x => x.dept===e.dept && x.empName===e.name && x.round==="4차");
-    const rSelf = evals.find(x => x.dept===e.dept && x.empName===e.name && x.round===SELF_ROUND);
-    // 3차(임원 1차): 조규오 / 임웅걸 / 이석원 중 배정된 1명 (둘 이상이면 평균)
-    let score3 = null, eval3Name = null;
-    const arr3 = [];
-    EXEC_FIRST_ROUNDS.forEach(rn => {
-      const x = evals.find(y => y.dept===e.dept && y.empName===e.name && y.round===rn);
+  // 여러 차수 키 중 해당 직원에게 제출된 것을 모아 평균 + 평가자명
+  const pick = (e, rounds) => {
+    const arr = [], names = [];
+    rounds.forEach(rn => {
+      const x = evals.find(y => y.dept===e.dept && y.empName===e.name && y.round===rn && isEvalSubmitted(y));
       if (!x) return;
-      arr3.push(x.total);
-      eval3Name = eval3Name ? `${eval3Name}, ${x.evaluatorName}` : x.evaluatorName;
+      arr.push(x.total);
+      if (x.evaluatorName) names.push(x.evaluatorName);
     });
-    if (arr3.length) score3 = arr3.reduce((a,b)=>a+b,0)/arr3.length;
-    const score4 = r4 ? r4.total : null;
+    return { score: arr.length ? arr.reduce((a,b)=>a+b,0)/arr.length : null, name: names.join(", ") || null };
+  };
+  const rows = emps.map(e => {
+    const rSelf = evals.find(x => x.dept===e.dept && x.empName===e.name && x.round===SELF_ROUND);
+    const p1 = pick(e, EXEC_R1_ROUNDS);   // 임원 1차
+    const p2 = pick(e, EXEC_R2_ROUNDS);   // 임원 2차
+    const p3 = pick(e, [EXEC_R3_ROUND]);  // 임원 3차 (대표이사)
+    const score1 = p1.score, eval1Name = p1.name;
+    const score3 = p2.score, eval3Name = p2.name;   // score3/eval3Name = 기존 화면 호환(임원 2차)
+    const score4 = p3.score;
     const parts = [];
+    if (score1 !== null) parts.push(score1);
     if (score3 !== null) parts.push(score3);
     if (score4 !== null) parts.push(score4);
     const avg = parts.length ? parts.reduce((a,b)=>a+b,0)/parts.length : null;
@@ -6129,8 +6183,9 @@ function computeExecResults(period) {
     const avgAdjusted = avg !== null ? avg + adjustment : null;
     return {
       dept: e.dept, empName: e.name, empRank: e.rank, rankCategory: e.rankCategory,
+      score1, eval1Name,
       score3, score4, eval3Name,
-      eval4Name: r4 ? r4.evaluatorName : null,
+      eval4Name: p3.name,
       selfScore: isEvalSubmitted(rSelf) ? rSelf.total : null,
       selfSubmitted: isEvalSubmitted(rSelf),
       selfDraft: !!rSelf && !isEvalSubmitted(rSelf),
@@ -6416,12 +6471,15 @@ function rptPersonPage(P, pno, ptot, dist) {
   const sa = rptAxisVals(form, axes, P.selfEv);
   const s1 = rptAxisVals(form, axes, P.ev1);
   const s2 = rptAxisVals(form, axes, P.ev2);
-  const evs = [s1, s2].filter(Boolean);
+  const s3 = rptAxisVals(form, axes, P.ev3);
+  const evs = [s1, s2, s3].filter(Boolean);
   if (!sa || !evs.length) return "";
+  const hasR3 = !!P.l3;
   const series = [
     { color: "#059669", fill: "rgba(5,150,105,.10)", dash: 'stroke-dasharray="5 3"', vals: sa.map(v => v[3]) },
     { color: "#2563eb", fill: "rgba(37,99,235,.10)", dash: "", vals: s1 ? s1.map(v => v[3]) : null },
-    { color: "#ea580c", fill: "rgba(234,88,12,.10)", dash: "", vals: s2 ? s2.map(v => v[3]) : null }
+    { color: "#ea580c", fill: "rgba(234,88,12,.10)", dash: "", vals: s2 ? s2.map(v => v[3]) : null },
+    { color: "#7c3aed", fill: "rgba(124,58,237,.10)", dash: "", vals: s3 ? s3.map(v => v[3]) : null }
   ];
   const rows = sa.map((a, i) => {
     const pav = evs.reduce((s, x) => s + x[i][3], 0) / evs.length;
@@ -6432,11 +6490,12 @@ function rptPersonPage(P, pno, ptot, dist) {
       <td class="c sf">${fmtScore(a[1])}</td>
       <td class="c">${s1 ? fmtScore(s1[i][1]) : "-"}</td>
       <td class="c">${s2 ? fmtScore(s2[i][1]) : "-"}</td>
+      ${hasR3 ? `<td class="c">${s3 ? fmtScore(s3[i][1]) : "-"}</td>` : ""}
       <td class="c av"><b>${avg.toFixed(1)}</b></td>
       <td class="c ${cls}">${gap > 0 ? "+" : ""}${gap.toFixed(0)}%p</td></tr>`;
   }).join("");
   const arS = rptAreaVals(form, P.selfEv);
-  const arE = [P.ev1, P.ev2].filter(Boolean).map(x => rptAreaVals(form, x));
+  const arE = [P.ev1, P.ev2, P.ev3].filter(Boolean).map(x => rptAreaVals(form, x));
   const areas = arS.map((a, i) => {
     const gv = arE.reduce((s, x) => s + x[i][1], 0) / arE.length;
     const pav = arE.reduce((s, x) => s + x[i][3], 0) / arE.length;
@@ -6460,7 +6519,8 @@ function rptPersonPage(P, pno, ptot, dist) {
   else per = ["뚜렷한 차이", `자기평가를 평가자 평균보다 <b>${ad.toFixed(1)}점 ${dir}</b> 매겼습니다. 전사 상위권에 드는 큰 격차로 <b>반드시 면담이 필요</b>합니다.`, d > 0 ? "po" : "pu"];
   const drank = dist.filter(v => Math.abs(v) > ad).length + 1;
   const distAvg = dist.length ? (dist.reduce((s, v) => s + Math.abs(v), 0) / dist.length).toFixed(1) : "-";
-  const gap12 = (s1 && s2) ? Math.abs(s1.reduce((s, v) => s + v[1], 0) - s2.reduce((s, v) => s + v[1], 0)) : null;
+  const tots = evs.map(x => x.reduce((s, v) => s + v[1], 0));
+  const gap12 = tots.length > 1 ? (Math.max.apply(null, tots) - Math.min.apply(null, tots)) : null;
   const adjTxt = P.adjCats.length ? " · " + P.adjCats.join("·") : "";
   const cmt = (cls, lbl, who, txt) =>
     `<div class="cm"><div class="cmt ${cls}">${esc(lbl)} 평가자 총평 <i>${esc(who || "-")}</i></div>
@@ -6477,8 +6537,9 @@ function rptPersonPage(P, pno, ptot, dist) {
   </div>
   <div class="sc">
     <div class="sb sfb"><span>자기평가</span><b>${rptNum(P.tSelf)}</b></div>
-    <div class="sb"><span>${esc(P.l1)} · ${esc(P.e1 || "-")}</span><b>${rptNum(P.t1)}</b></div>
+    <div class="sb"><span>${esc(P.l1)} · ${esc(P.e1 || "-")}</span><b>${P.t1 == null ? "미제출" : rptNum(P.t1)}</b></div>
     <div class="sb"><span>${esc(P.l2)} · ${esc(P.e2 || "-")}</span><b>${P.t2 == null ? "미제출" : rptNum(P.t2)}</b></div>
+    ${hasR3 ? `<div class="sb"><span>${esc(P.l3)} · ${esc(P.e3 || "-")}</span><b>${P.t3 == null ? "미제출" : rptNum(P.t3)}</b></div>` : ""}
     <div class="sb"><span>원평균</span><b>${rptNum(P.avg)}</b></div>
     <div class="sb"><span>가감점${adjTxt}</span><b class="${P.adj > 0 ? "pos" : (P.adj < 0 ? "neg" : "zero")}">${P.adj > 0 ? "+" : ""}${fmtScore(P.adj)}</b></div>
     <div class="sb fin"><span>최종 평균</span><b>${rptNum(P.fin)}</b></div>
@@ -6487,11 +6548,12 @@ function rptPersonPage(P, pno, ptot, dist) {
   <div class="main">
     <div class="c1"><div class="sect">역량 프로파일 <i>6개 평가영역 · 득점률(%)</i></div>
       <div class="chart">${rptRadar(axes, series)}</div>
-      <div class="lg"><span><i class="ln self"></i>자기평가</span><span><i class="ln r1"></i>${esc(P.l1)}</span><span><i class="ln r2"></i>${esc(P.l2)}</span></div></div>
+      <div class="lg"><span><i class="ln self"></i>자기평가</span><span><i class="ln r1"></i>${esc(P.l1)}</span><span><i class="ln r2"></i>${esc(P.l2)}</span>${hasR3 ? `<span><i class="ln r3"></i>${esc(P.l3)}</span>` : ""}</div></div>
     <div class="c2"><div class="sect">영역별 상세</div>
-      <table class="ax-t"><thead><tr><th style="width:34%">평가영역</th><th style="width:12%">자기</th>
-        <th style="width:11%">${esc(P.l1)}</th><th style="width:11%">${esc(P.l2)}</th>
-        <th style="width:16%">평가자 평균</th><th style="width:16%">인식차</th></tr></thead>
+      <table class="ax-t"><thead><tr><th style="width:${hasR3 ? 30 : 34}%">평가영역</th><th style="width:11%">자기</th>
+        <th style="width:10%">${esc(P.l1)}</th><th style="width:10%">${esc(P.l2)}</th>
+        ${hasR3 ? `<th style="width:10%">${esc(P.l3)}</th>` : ""}
+        <th style="width:15%">평가자 평균</th><th style="width:14%">인식차</th></tr></thead>
         <tbody>${rows}</tbody></table>
       <div class="sect mt">3대 영역 종합</div><div class="areas">${areas}</div></div>
     <div class="c3"><div class="sect">인재 분석</div>
@@ -6503,7 +6565,7 @@ function rptPersonPage(P, pno, ptot, dist) {
         <div class="ans">다음 반기 육성 목표 설정 시 우선 검토 대상</div></div>
       <div class="an ${per[2]}"><div class="ant">자기 인식 차이 — ${per[0]}</div>
         <div class="anb2">${per[1]}</div>${rptGauge(d)}
-        <div class="ans">자기평가 ${fmtScore(totSelf)} − 평가자 평균 ${totEv.toFixed(1)} = <b>${d > 0 ? "+" : "-"}${ad.toFixed(1)}점</b> · 전사 ${dist.length}명 중 <b>${drank}번째</b>로 큰 차이 (전사 평균 격차 ${distAvg}점)${gap12 != null ? ` · 1·2차 평가자 간 차이 ${gap12.toFixed(1)}점` : " · 2차 평가 미제출"}</div></div></div>
+        <div class="ans">자기평가 ${fmtScore(totSelf)} − 평가자 평균 ${totEv.toFixed(1)} = <b>${d > 0 ? "+" : "-"}${ad.toFixed(1)}점</b> · 전사 ${dist.length}명 중 <b>${drank}번째</b>로 큰 차이 (전사 평균 격차 ${distAvg}점)${gap12 != null ? ` · 평가자 간 최대 차이 ${gap12.toFixed(1)}점` : " · 평가자 1명만 제출"}</div></div></div>
   </div>
   <div class="cmts">
     <div class="cm self"><div class="cmt">본인 작성 · 실적 및 업무 내용<span class="lencnt">${String(P.selfComment || "").length}자</span></div>
@@ -6511,6 +6573,7 @@ function rptPersonPage(P, pno, ptot, dist) {
     <div class="cmright">
       ${cmt("r1", P.l1, P.e1, P.c1)}
       ${cmt("r2", P.l2, P.e2, P.c2)}
+      ${hasR3 ? cmt("r3", P.l3, P.e3, P.c3) : ""}
     </div>
   </div>
   <div class="foot"><div class="fn">※ 최종 평균 = 원평균 + 가감점(근태·안전·교육) · 등급은 ${esc(P.poolName)} 내 상대평가 기준 &nbsp;|&nbsp; 득점률 = 영역 득점 ÷ 배점 · 인식차 = 자기평가 득점률 − 평가자 평균 득점률<span class="pgno">${pno} / ${ptot}</span></div></div>
@@ -6523,16 +6586,24 @@ function rptBuildPerson(emp, period, ctx) {
   const selfEv = getEvaluation(emp.dept, emp.name, SELF_ROUND, period);
   if (!isEvalSubmitted(selfEv)) return null;
   const isExec = (emp.rank === "부장" || emp.rank === "이사");
-  let ev1 = null, ev2 = null, e1 = "", e2 = "", l1 = "1차", l2 = "2차";
+  let ev1 = null, ev2 = null, ev3 = null, e1 = "", e2 = "", e3 = "", l1 = "1차", l2 = "2차", l3 = "";
   if (isExec) {
-    l1 = "임원 1차"; l2 = "임원 2차";
-    ["3차-조규오", "3차-임웅걸", "3차-이석원"].forEach(r => {
-      const x = getEvaluation(emp.dept, emp.name, r, period);
-      if (isEvalSubmitted(x) && !ev1) { ev1 = x; e1 = x.evaluatorName || ""; }
-    });
-    const x4 = getEvaluation(emp.dept, emp.name, "4차", period);
-    if (isEvalSubmitted(x4)) { ev2 = x4; e2 = x4.evaluatorName || ""; }
-    else { e2 = "양정일 대표이사"; }
+    l1 = "임원 1차"; l2 = "임원 2차"; l3 = "임원 3차";
+    const firstOf = (rounds) => {
+      for (const r of rounds) {
+        const x = getEvaluation(emp.dept, emp.name, r, period);
+        if (isEvalSubmitted(x)) return x;
+      }
+      return null;
+    };
+    ev1 = firstOf(EXEC_R1_ROUNDS); if (ev1) e1 = ev1.evaluatorName || "";
+    ev2 = firstOf(EXEC_R2_ROUNDS); if (ev2) e2 = ev2.evaluatorName || "";
+    ev3 = firstOf([EXEC_R3_ROUND]); e3 = ev3 ? (ev3.evaluatorName || "") : "양정일 대표이사";
+    if (!e1) { // 미제출이면 배정된 평가자명 표시
+      const who = Object.keys(EXEC_R1_ASSIGN).find(n => (EXEC_R1_ASSIGN[n] || []).includes(emp.name));
+      if (who) { const v = getEvaluators()["임원"] && getEvaluators()["임원"][execR1RoundOf(who)];
+        e1 = v ? `${v.name} ${v.title || ""}`.trim() : who; }
+    }
   } else {
     const a = getEvaluation(emp.dept, emp.name, "1차", period);
     const b = getEvaluation(emp.dept, emp.name, "2차", period);
@@ -6542,16 +6613,17 @@ function rptBuildPerson(emp, period, ctx) {
     if (!e1 && evs[emp.dept] && evs[emp.dept]["1차"]) e1 = (evs[emp.dept]["1차"].name || "") + " " + (evs[emp.dept]["1차"].title || "");
     if (!e2 && evs[emp.dept] && evs[emp.dept]["2차"]) e2 = (evs[emp.dept]["2차"].name || "") + " " + (evs[emp.dept]["2차"].title || "");
   }
-  if (!ev1 && !ev2) return null;
+  if (!ev1 && !ev2 && !ev3) return null;
   const det = getAdjustmentDetail(period, emp.dept, emp.name) || {};
   const adjCats = Object.keys(det).filter(k => Number(det[k].points) !== 0);
   return {
     name: emp.name, rank: emp.rank, dept: emp.dept, cat: emp.rankCategory,
-    form, selfEv, ev1, ev2, e1: e1.trim(), e2: e2.trim(), l1, l2,
-    tSelf: selfEv.total, t1: ev1 ? ev1.total : null, t2: ev2 ? ev2.total : null,
+    form, selfEv, ev1, ev2, ev3, e1: e1.trim(), e2: e2.trim(), e3: (e3 || "").trim(), l1, l2, l3,
+    tSelf: selfEv.total, t1: ev1 ? ev1.total : null, t2: ev2 ? ev2.total : null, t3: ev3 ? ev3.total : null,
     avg: ctx.avg, adj: ctx.adj, adjCats, fin: ctx.fin, grade: ctx.grade,
     rankTxt: ctx.rankTxt, poolName: isExec ? "임원 풀" : "부서",
     selfComment: selfEv.comment || "", c1: ev1 ? (ev1.comment || "") : "", c2: ev2 ? (ev2.comment || "") : "",
+    c3: ev3 ? (ev3.comment || "") : "",
     periodLabel: periodLabel(period), periodRange: ctx.periodRange, isExec
   };
 }
@@ -6846,7 +6918,7 @@ table.rk-t tr.hi .rk{color:#b45309;font-weight:900}
 .chart svg{max-height:100%}
 .lg{display:flex;justify-content:center;gap:12px;font-size:10px;color:#374151;margin-top:2px}
 .lg i{display:inline-block;width:13px;height:2.5px;vertical-align:middle;margin-right:4px}
-.ln.self{background:#059669}.ln.r1{background:#2563eb}.ln.r2{background:#ea580c}
+.ln.self{background:#059669}.ln.r1{background:#2563eb}.ln.r2{background:#ea580c}.ln.r3{background:#7c3aed}
 table.ax-t{width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed}
 table.ax-t th,table.ax-t td{border:1px solid var(--bd);padding:5px}
 table.ax-t th{background:#eef2ff;color:var(--pri2);font-size:10px;font-weight:700;text-align:center;line-height:1.2}
@@ -6884,6 +6956,7 @@ table.ax-t th{background:#eef2ff;color:var(--pri2);font-size:10px;font-weight:70
 .cm{min-height:0}
 .cmt{font-size:10px;font-weight:800;color:#2563eb;border-left:3px solid #2563eb;padding-left:6px;margin-bottom:3px}
 .cmt.r2{border-left-color:#ea580c;color:#ea580c}
+.cmt.r3{border-left-color:#7c3aed;color:#7c3aed}
 .cm.self .cmt{border-left-color:#059669;color:#059669}
 .cmt i{font-style:normal;font-weight:500;color:var(--muted);margin-left:4px}
 .cmb{white-space:pre-wrap;font-size:10px;line-height:1.6;color:#374151;background:#f9fafb;border:1px solid #eef2f7;border-radius:5px;padding:6px 8px;overflow:hidden}
