@@ -6886,7 +6886,18 @@ table.ax-t th{background:#eef2ff;color:var(--pri2);font-size:10px;font-weight:70
 /* ---- 실적 내용 자동 맞춤 (보고서 창에서 실행) ---- */
 const RPT_FIT_JS = String.raw`
 function fitSelfText(){
-  var tiers=[[10,1.6,1],[9.4,1.55,2],[8.7,1.48,2],[8.1,1.42,2],[7.5,1.36,3]];
+  // 다단(column)을 적용하면 넘침이 "세로"가 아니라 "가로"로 발생하므로 측정 기준을 분리한다.
+  function overflows(el, cols){
+    return cols > 1 ? (el.scrollWidth > el.clientWidth + 1)
+                    : (el.scrollHeight > el.clientHeight + 1);
+  }
+  function applyTier(el, t){
+    el.style.fontSize=t[0]+'px'; el.style.lineHeight=t[1];
+    el.style.columnCount = (t[2] > 1 ? t[2] : 'auto');
+    el.style.columnGap='6mm';
+    el.style.columnRule = t[2] > 1 ? '1px solid #e5e7eb' : 'none';
+  }
+  var tiers=[[10,1.6,1],[9.4,1.55,2],[8.7,1.48,2],[8.1,1.42,2],[7.5,1.36,3],[6.9,1.32,3]];
   document.querySelectorAll('.selftxt').forEach(function(el){
     if(el.classList.contains('none')) return;
     var full=(el.dataset.full!==undefined?el.dataset.full:el.textContent);
@@ -6896,17 +6907,15 @@ function fitSelfText(){
     for(var i=0;i<tiers.length;i++){
       var t=tiers[i];
       el.textContent=full;
-      el.style.fontSize=t[0]+'px'; el.style.lineHeight=t[1];
-      el.style.columnCount=t[2]; el.style.columnGap='6mm';
-      el.style.columnRule=t[2]>1?'1px solid #e5e7eb':'none';
-      if(el.scrollHeight<=el.clientHeight+1){ok=true;el.dataset.tier=(i+1);break;}
+      applyTier(el, t);
+      if(!overflows(el, t[2])){ ok=true; el.dataset.tier=(i+1); break; }
     }
     if(!ok){
-      el.style.fontSize=last[0]+'px'; el.style.lineHeight=last[1]; el.style.columnCount=last[2];
+      applyTier(el, last);
       var tail='\n\n… (이하 생략 · 전문은 평가 시스템에서 확인)';
       var lo=0,hi=full.length,best=0;
       while(lo<=hi){var mid=(lo+hi)>>1; el.textContent=full.slice(0,mid)+tail;
-        if(el.scrollHeight<=el.clientHeight+1){best=mid;lo=mid+1;}else{hi=mid-1;}}
+        if(!overflows(el, last[2])){best=mid;lo=mid+1;}else{hi=mid-1;}}
       el.textContent=full.slice(0,best)+tail;
       el.dataset.tier='생략';
     }
