@@ -1761,6 +1761,8 @@ const ADMIN_NAMES = new Set(["강유석", "양정일"]);
 const NO_SELF_EVAL_RANKS = new Set(["상무", "전무", "부사장", "대표이사", "회장"]);
 // 자기평가 저장용 라운드 키
 const SELF_ROUND = "자기";
+// 임원 1차(3차) 평가 차수 — 평가자 추가 시 이 배열에만 넣으면 집계·보고서에 모두 반영됨
+const EXEC_FIRST_ROUNDS = ["3차-조규오", "3차-임웅걸", "3차-이석원"];
 // 자기평가 수정 요청 등 문의처 (담당자 내선)
 const HR_EXT = "5704";
 
@@ -3514,7 +3516,7 @@ function getViewerRole() {
   if (session.isAdmin) return "admin";
   if (session.evaluatorDept === "임원") {
     if (session.evaluatorRound === "4차") return "exec-2nd";
-    if (session.evaluatorRound === "3차-조규오" || session.evaluatorRound === "3차-임웅걸") return "exec-1st";
+    if (String(session.evaluatorRound || "").startsWith("3차")) return "exec-1st";
   }
   if (session.evaluatorDept === "인사/안전/교육") return "hr-safety";
   if (session.evaluatorDept && session.evaluatorRound === "1차") return "dept-1st";
@@ -4118,7 +4120,7 @@ function renderAdminPeriods(body) {
   const evs = getEvaluations();
   const totalTargets =
     EMPLOYEES.filter(e => !isExecEmp(e)).length * 2  // 일반 직원 × (1차+2차) 대략
-    + EXEC_TARGETS["3차-조규오"].length + EXEC_TARGETS["3차-임웅걸"].length + EXEC_TARGETS["4차"].length;
+    + EXEC_FIRST_ROUNDS.reduce((n, r) => n + ((EXEC_TARGETS[r] || []).length), 0) + EXEC_TARGETS["4차"].length;
   const rows = s.periods.map(p => {
     const cntAll = evs.filter(e => (e.period||"2026-H1") === p.id).length;
     const closedDate = p.closedAt ? new Date(p.closedAt).toLocaleDateString('ko-KR') : "";
@@ -5433,7 +5435,7 @@ function renderAdminDeptDist(body) {
 function renderAdminAccounts(body) {
   const evs = getEvaluators();
   const rows = [];
-  const roundOrder = ["1차","2차","3차-조규오","3차-임웅걸","4차"];
+  const roundOrder = ["1차","2차","3차-조규오","3차-임웅걸","3차-이석원","4차"];
   Object.entries(evs).forEach(([dept, info]) => {
     roundOrder.forEach(r => {
       if (info[r]) {
@@ -5531,7 +5533,7 @@ async function setPwManual(dept, round) {
 function exportAccountsCsv() {
   const evs = getEvaluators();
   const rows = [["부서","차수","평가자","직위","비밀번호"]];
-  const roundOrder = ["1차","2차","3차-조규오","3차-임웅걸","4차"];
+  const roundOrder = ["1차","2차","3차-조규오","3차-임웅걸","3차-이석원","4차"];
   Object.entries(evs).forEach(([dept, info]) => {
     roundOrder.forEach(r => {
       if (info[r]) {
@@ -5697,10 +5699,9 @@ function exportEvaluationsXlsx() {
   const execHeader = ["부서","이름","직급","1차점수","1차평가자","1차코멘트","2차점수","2차평가자","2차코멘트","평균","등급","순위"];
   const execRows = [execHeader];
   computeExecResults(period).forEach(r => {
-    const r3kq = all.find(x => x.dept===r.dept && x.empName===r.empName && x.round==="3차-조규오");
-    const r3iw = all.find(x => x.dept===r.dept && x.empName===r.empName && x.round==="3차-임웅걸");
     const r4   = all.find(x => x.dept===r.dept && x.empName===r.empName && x.round==="4차");
-    const r3 = r3kq || r3iw;
+    let r3 = null;
+    EXEC_FIRST_ROUNDS.forEach(rn => { if (!r3) r3 = all.find(x => x.dept===r.dept && x.empName===r.empName && x.round===rn); });
     execRows.push([
       r.dept, r.empName, r.empRank,
       r.score3 !== null ? Number(r.score3.toFixed(2)) : "",
@@ -6106,15 +6107,17 @@ function computeExecResults(period) {
   const emps = EMPLOYEES.filter(e => e.rank === "부장" || e.rank === "이사");
   const evals = getEvaluationsByPeriod(period);
   const rows = emps.map(e => {
-    const r3kq = evals.find(x => x.dept===e.dept && x.empName===e.name && x.round==="3차-조규오");
-    const r3iw = evals.find(x => x.dept===e.dept && x.empName===e.name && x.round==="3차-임웅걸");
     const r4   = evals.find(x => x.dept===e.dept && x.empName===e.name && x.round==="4차");
     const rSelf = evals.find(x => x.dept===e.dept && x.empName===e.name && x.round===SELF_ROUND);
-    // 3차: 대상자별로 조규오 또는 임웅걸 중 한 명만 평가 (둘 다 있으면 평균)
+    // 3차(임원 1차): 조규오 / 임웅걸 / 이석원 중 배정된 1명 (둘 이상이면 평균)
     let score3 = null, eval3Name = null;
     const arr3 = [];
-    if (r3kq) { arr3.push(r3kq.total); eval3Name = r3kq.evaluatorName; }
-    if (r3iw) { arr3.push(r3iw.total); eval3Name = eval3Name ? `${eval3Name}, ${r3iw.evaluatorName}` : r3iw.evaluatorName; }
+    EXEC_FIRST_ROUNDS.forEach(rn => {
+      const x = evals.find(y => y.dept===e.dept && y.empName===e.name && y.round===rn);
+      if (!x) return;
+      arr3.push(x.total);
+      eval3Name = eval3Name ? `${eval3Name}, ${x.evaluatorName}` : x.evaluatorName;
+    });
     if (arr3.length) score3 = arr3.reduce((a,b)=>a+b,0)/arr3.length;
     const score4 = r4 ? r4.total : null;
     const parts = [];
