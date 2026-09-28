@@ -6599,17 +6599,29 @@ function rptDeptBlock(dept, results, period) {
       <th class="w7">원평균</th><th class="w8">가감점</th><th class="w9">최종 평균</th><th class="w10">등급</th>
     </tr></thead><tbody>${body}</tbody></table></div>`;
 }
-// 인원수 기준 자동 페이지 배치 (first-fit-decreasing)
+// 보고서 부서 출력 순서 (고정) — 여기 순서대로 인쇄된다.
+const RPT_DEPT_ORDER = [
+  "품질보증부", "수배전설계부", "생산관리부", "자재관리부", "수배전영업부",
+  "신재생에너지영업부", "부설연구소", "신사업부", "경영지원부"
+];
+function rptSortDepts(depts) {
+  return depts.slice().sort((a, b) => {
+    const ia = RPT_DEPT_ORDER.indexOf(a), ib = RPT_DEPT_ORDER.indexOf(b);
+    return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib) || String(a).localeCompare(String(b), "ko");
+  });
+}
+// 지정된 부서 순서를 유지한 채, 한 장에 들어갈 만큼만 담고 넘치면 다음 장으로 (순서 보존)
 function rptPackDepts(sizes) {
   const H = n => 22 + n * 6.6, CAP = 170;
-  const names = Object.keys(sizes).sort((a, b) => sizes[b] - sizes[a]);
-  const pages = [], used = [];
+  const names = rptSortDepts(Object.keys(sizes));
+  const pages = [];
+  let cur = [], used = 0;
   names.forEach(d => {
     const h = H(sizes[d]);
-    let idx = pages.findIndex((_, i) => used[i] + h <= CAP);
-    if (idx < 0) { pages.push([]); used.push(0); idx = pages.length - 1; }
-    pages[idx].push(d); used[idx] += h;
+    if (cur.length && used + h > CAP) { pages.push(cur); cur = []; used = 0; }
+    cur.push(d); used += h;
   });
+  if (cur.length) pages.push(cur);
   return pages;
 }
 
@@ -6683,7 +6695,7 @@ function buildReportHtml(opts) {
   // ── 개인 대상자 ──
   let targets = [];
   const pushEmp = (e, ctx) => { const p = rptBuildPerson(e, period, ctx); if (p) targets.push(p); };
-  const deptOrder = summary.length ? [].concat.apply([], summary) : depts;
+  const deptOrder = summary.length ? [].concat.apply([], summary) : rptSortDepts(depts);
   const wantDept = opts.scope === "dept" ? opts.dept : null;
   const wantName = opts.scope === "person" ? opts.empName : null;
   (wantDept ? [wantDept] : deptOrder).forEach(d => {
