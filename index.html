@@ -6743,7 +6743,9 @@ function buildReportHtml(opts) {
   <div class="pf"><span>최종 평균 = 원평균(1·2차 평균) + 가감점(근태·안전·교육) · 등급은 최종 평균 기준</span><span>${i + 1} / ${TOT}</span></div>
 </section>`);
     });
-    const allRows = [].concat.apply([], depts.map(d => deptRes[d]));
+    // computeDeptResults 의 행에는 dept 가 없으므로 붙여 준다 (순위표 부서명 · 가감점 분야 조회용)
+    const allRows = [].concat.apply([], rptSortDepts(depts).map(
+      d => deptRes[d].map(r => Object.assign({}, r, { dept: d }))));
     pages.push(rptRankPage(allRows, period, summary.length + 1, TOT));
   }
   targets.forEach((p, i) => pages.push(rptPersonPage(p, nSummary + i + 1, TOT, dist)));
