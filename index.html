@@ -537,6 +537,9 @@
   .rd-head .rd-sub { font-size:12.5px; opacity:.85; margin-top:3px; }
   .rd-x { background: rgba(255,255,255,.16); border:0; color:#fff; font-size:17px;
           width:32px; height:32px; border-radius:8px; cursor:pointer; flex:none; }
+  .rd-print { background: rgba(255,255,255,.16); border:0; color:#fff; font-size:12.5px; font-weight:700;
+              padding:8px 12px; border-radius:8px; cursor:pointer; white-space:nowrap; }
+  .rd-print:hover { background: rgba(255,255,255,.28); }
   .rd-sum { display:flex; flex-wrap:wrap; gap:8px; padding:12px 20px; background:#f8fafc; border-bottom:1px solid var(--border); }
   .rd-sb { background:#fff; border:1px solid var(--border); border-radius:9px; padding:7px 12px;
            font-size:11.5px; color:var(--muted); min-width:78px; text-align:center; }
@@ -5313,7 +5316,10 @@ function openResultDetail(dept, name) {
       <div class="rd-head">
         <div><h2>${esc(name)} ${esc(emp.rank)} · 평가 결과</h2>
           <div class="rd-sub">${esc(dept)} · ${esc(emp.rankCategory)} 평가표 · ${esc(periodLabel(period))}</div></div>
-        <button class="rd-x" onclick="closeResultDetail()" title="닫기 (Esc)">✕</button>
+        <div class="flex" style="gap:6px;align-items:center;flex:none">
+          <button class="rd-print" onclick="openReportPerson('${esc(dept)}','${esc(name)}')" title="이 직원의 개인 결과 보고서를 A4로 인쇄">🖨 보고서 인쇄</button>
+          <button class="rd-x" onclick="closeResultDetail()" title="닫기 (Esc)">✕</button>
+        </div>
       </div>
       <div class="rd-sum">${sum.join("")}</div>
       <div class="rd-tabs">${tabs}</div>
@@ -5559,7 +5565,30 @@ function renderAdminData(body) {
       <div class="stat-box"><div class="label">직원 수</div><div class="value">${EMPLOYEES.length}</div></div>
     </div>
 
-    <h3 style="margin-top:20px">내보내기</h3>
+    <h3 style="margin-top:20px">📄 결과 보고서 인쇄 (A4 가로)</h3>
+    <div class="notice info" style="line-height:1.7;margin-bottom:10px">
+      표지 · 부서별 결과 · 전직원 종합 순위 · <b>개인별 인재분석 보고서(육각형 역량 프로파일 + 자기평가 + 1·2차 총평)</b>가
+      하나의 문서로 만들어집니다. 새 창이 열리면 <b>🖨 인쇄</b> → 대상을 <b>PDF로 저장</b>으로 선택하시면 파일로 보관할 수 있습니다.
+      <br><span class="mini">※ 개인 보고서는 <b>자기평가가 제출되고 1차 또는 2차 평가가 완료된 인원</b>만 생성됩니다. · 용지 방향 <b>가로</b>, <b>배경 그래픽</b> 켜기 확인</span>
+    </div>
+    <div class="flex" style="gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+      <button class="small" onclick="openReportAll()">📄 전체 보고서 인쇄 (표지 + 부서 + 순위 + 개인 전원)</button>
+      <select id="rpt-dept" style="padding:9px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px">
+        <option value="">부서 선택…</option>
+        ${[...new Set(EMPLOYEES.filter(e=>!isExecEmp(e)).map(e=>e.dept))].map(d=>`<option value="${esc(d)}">${esc(d)}</option>`).join("")}
+        <option value="임원">임원 (부장·이사)</option>
+      </select>
+      <button class="small secondary" onclick="openReportDept()">👤 선택 부서 개인 보고서</button>
+    </div>
+    <div class="flex" style="gap:10px;flex-wrap:wrap;align-items:center">
+      <select id="rpt-emp" style="padding:9px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;min-width:220px">
+        <option value="">직원 선택…</option>
+        ${EMPLOYEES.filter(e=>e.active!==false).slice().sort((a,b)=>a.dept.localeCompare(b.dept,"ko")||a.name.localeCompare(b.name,"ko")).map(e=>`<option value="${esc(e.dept)}|${esc(e.name)}">${esc(e.dept)} · ${esc(e.name)} ${esc(e.rank)}</option>`).join("")}
+      </select>
+      <button class="small secondary" onclick="(function(){const v=document.getElementById('rpt-emp').value;if(!v){alert('직원을 선택해 주세요.');return;}const a=v.split('|');openReportPerson(a[0],a[1]);})()">👤 선택 직원 1명 보고서</button>
+    </div>
+
+    <h3 style="margin-top:28px">내보내기</h3>
     <div class="flex" style="gap:10px;flex-wrap:wrap">
       <button class="small" onclick="exportEvaluationsCsv()">평가결과 CSV 내보내기</button>
       <button class="small" onclick="exportEvaluationsDetailCsv()">평가 상세(항목별) CSV</button>
@@ -6247,8 +6276,638 @@ window.onFormsRemoveSub = onFormsRemoveSub;
 window.onFormsAddGroup = onFormsAddGroup;
 window.onFormsDeleteGroup = onFormsDeleteGroup;
 window.onFormsSave = onFormsSave;
+
+/* ==========================================================
+   결과 보고서 인쇄 (A4 가로)
+   표지 + 부서별 결과 + 전직원 순위 + 개인 인재분석 보고서
+   ========================================================== */
+const RPT_AXIS_MAP = {
+  s: [["성과 달성",["s1","s3"]],["업무 품질",["s2","s4"]],["직무 전문성",["s5","s6"]],
+      ["문제해결·도구",["s7","s8"]],["협업·소통",["s9","s10"]],["책임·안전",["s11","s12"]]],
+  m: [["성과 달성",["m1","m2"]],["개선·효율",["m3","m4"]],["직무 전문성",["m5","m6"]],
+      ["기획·변화대응",["m7","m8"]],["육성·협업",["m9","m10"]],["규정·안전",["m11","m12"]]]
+};
+// 평가표(form)를 6개 축으로 묶는다. id 가 바뀐 폼은 순서대로 6등분(fallback).
+function rptAxes(form) {
+  const items = [];
+  (form.areas || []).forEach(a => (a.items || []).forEach(it => items.push(it)));
+  const ids = items.map(it => it.id);
+  const map = RPT_AXIS_MAP[String(ids[0] || "").charAt(0)];
+  if (map && map.every(([, g]) => g.every(id => ids.includes(id)))) return map;
+  const out = [], per = Math.ceil(items.length / 6);
+  for (let i = 0; i < 6; i++) {
+    const g = ids.slice(i * per, (i + 1) * per);
+    if (g.length) out.push(["영역 " + (i + 1), g]);
+  }
+  return out;
+}
+function rptFindItem(form, id) {
+  let found = null;
+  (form.areas || []).forEach(a => (a.items || []).forEach(it => { if (it.id === id) found = it; }));
+  return found;
+}
+// 축별 [이름, 득점, 배점, 득점률]
+function rptAxisVals(form, axes, ev) {
+  if (!ev) return null;
+  return axes.map(([nm, ids]) => {
+    let got = 0, mx = 0;
+    ids.forEach(id => {
+      const it = rptFindItem(form, id);
+      if (!it) return;
+      mx += itemMaxPoints(it);
+      const v = itemScoreSum(it, ev);
+      got += (v == null ? 0 : v);
+    });
+    return [nm, Math.round(got * 10) / 10, mx, mx ? got / mx * 100 : 0];
+  });
+}
+// 3대 영역 [이름, 득점, 배점, 득점률]
+function rptAreaVals(form, ev) {
+  if (!ev) return null;
+  return (form.areas || []).map(a => {
+    let got = 0, mx = 0;
+    (a.items || []).forEach(it => {
+      mx += itemMaxPoints(it);
+      const v = itemScoreSum(it, ev);
+      got += (v == null ? 0 : v);
+    });
+    return [String(a.area).replace(/\(.*\)/, "").trim(), Math.round(got * 10) / 10, mx, mx ? got / mx * 100 : 0];
+  });
+}
+function rptGc(g) { return ({ S: "gs", A: "ga", B: "gb", C: "gc" })[g] || "gn"; }
+function rptNum(v) { return (v == null || v === "") ? "-" : fmtScore(v); }
+
+/* ---- 육각형 레이더 ---- */
+function rptRadar(axes, series, W, H, R) {
+  W = W || 360; H = H || 300; R = R || 95;
+  const cx = W / 2, cy = H / 2 - 3, n = axes.length;
+  const pt = (i, pct, r) => {
+    const a = (-90 + i * (360 / n)) * Math.PI / 180, rr = (r == null ? R : r) * pct / 100;
+    return [cx + rr * Math.cos(a), cy + rr * Math.sin(a)];
+  };
+  const g = [];
+  [20, 40, 60, 80, 100].forEach(ring => {
+    const pts = axes.map((_, i) => pt(i, ring).map(v => v.toFixed(1)).join(",")).join(" ");
+    g.push(`<polygon points="${pts}" fill="none" stroke="${ring === 100 ? "#94a3b8" : "#e2e8f0"}" stroke-width="${ring === 100 ? 1.2 : 0.8}"/>`);
+  });
+  axes.forEach((_, i) => {
+    const [x, y] = pt(i, 100);
+    g.push(`<line x1="${cx}" y1="${cy}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" stroke="#e2e8f0" stroke-width="0.8"/>`);
+  });
+  series.forEach(s => {
+    if (!s.vals) return;
+    const pts = s.vals.map((v, i) => pt(i, v).map(x => x.toFixed(1)).join(",")).join(" ");
+    g.push(`<polygon points="${pts}" fill="${s.fill}" stroke="${s.color}" stroke-width="2" ${s.dash || ""} stroke-linejoin="round"/>`);
+    s.vals.forEach((v, i) => {
+      const [x, y] = pt(i, v);
+      g.push(`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2.6" fill="${s.color}"/>`);
+    });
+  });
+  axes.forEach(([nm], i) => {
+    const [x, y] = pt(i, 100, R + 22);
+    const anchor = x > cx + 6 ? "start" : (x < cx - 6 ? "end" : "middle");
+    g.push(`<text x="${x.toFixed(1)}" y="${(y + 3).toFixed(1)}" text-anchor="${anchor}" font-size="10.5" font-weight="700" fill="#334155">${esc(nm)}</text>`);
+  });
+  [50, 100].forEach(ring => {
+    g.push(`<text x="${cx + 3}" y="${(cy - R * ring / 100 + 9).toFixed(1)}" font-size="7.5" fill="#94a3b8">${ring}%</text>`);
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px">${g.join("")}</svg>`;
+}
+
+/* ---- 자기 인식 차이 게이지 ---- */
+function rptGauge(d) {
+  const W = 250, H = 26, lo = -30, hi = 30;
+  const X = v => (Math.max(lo, Math.min(hi, v)) - lo) / (hi - lo) * W;
+  const col = Math.abs(d) < 2 ? "#059669" : (Math.abs(d) < 5 ? "#ca8a04" : (d > 0 ? "#dc2626" : "#2563eb"));
+  return `<svg class="gg" viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px">
+    <rect x="0" y="9" width="${W}" height="7" rx="3.5" fill="#e2e8f0"/>
+    <rect x="${X(-2).toFixed(1)}" y="9" width="${(X(2)-X(-2)).toFixed(1)}" height="7" fill="#bbf7d0"/>
+    <line x1="${X(-5.1).toFixed(1)}" y1="6" x2="${X(-5.1).toFixed(1)}" y2="19" stroke="#94a3b8" stroke-width="1" stroke-dasharray="2 2"/>
+    <line x1="${X(5.1).toFixed(1)}" y1="6" x2="${X(5.1).toFixed(1)}" y2="19" stroke="#94a3b8" stroke-width="1" stroke-dasharray="2 2"/>
+    <line x1="${X(0).toFixed(1)}" y1="4" x2="${X(0).toFixed(1)}" y2="21" stroke="#64748b" stroke-width="1.2"/>
+    <circle cx="${X(d).toFixed(1)}" cy="12.5" r="5.5" fill="${col}" stroke="#fff" stroke-width="1.6"/>
+    <text x="0" y="25" font-size="7" fill="#94a3b8">과소 -30</text>
+    <text x="${W}" y="25" font-size="7" fill="#94a3b8" text-anchor="end">+30 과대</text></svg>`;
+}
+
+/* ---- 전사 자기인식 차이 분포 (동적 계산) ---- */
+function rptSelfGapDist(period) {
+  const out = [];
+  EMPLOYEES.filter(e => e.active !== false).forEach(e => {
+    const self = getEvaluation(e.dept, e.name, SELF_ROUND, period);
+    if (!isEvalSubmitted(self)) return;
+    const rs = [];
+    ["1차", "2차", "3차-조규오", "3차-임웅걸", "3차-이석원", "4차"].forEach(r => {
+      const ev = getEvaluation(e.dept, e.name, r, period);
+      if (isEvalSubmitted(ev)) rs.push(ev.total);
+    });
+    if (!rs.length) return;
+    out.push(Math.round((self.total - rs.reduce((a, b) => a + b, 0) / rs.length) * 10) / 10);
+  });
+  return out;
+}
+
+/* ---- 개인 보고서 1장 ---- */
+function rptPersonPage(P, pno, ptot, dist) {
+  const form = P.form, axes = rptAxes(form);
+  const sa = rptAxisVals(form, axes, P.selfEv);
+  const s1 = rptAxisVals(form, axes, P.ev1);
+  const s2 = rptAxisVals(form, axes, P.ev2);
+  const evs = [s1, s2].filter(Boolean);
+  if (!sa || !evs.length) return "";
+  const series = [
+    { color: "#059669", fill: "rgba(5,150,105,.10)", dash: 'stroke-dasharray="5 3"', vals: sa.map(v => v[3]) },
+    { color: "#2563eb", fill: "rgba(37,99,235,.10)", dash: "", vals: s1 ? s1.map(v => v[3]) : null },
+    { color: "#ea580c", fill: "rgba(234,88,12,.10)", dash: "", vals: s2 ? s2.map(v => v[3]) : null }
+  ];
+  const rows = sa.map((a, i) => {
+    const pav = evs.reduce((s, x) => s + x[i][3], 0) / evs.length;
+    const avg = evs.reduce((s, x) => s + x[i][1], 0) / evs.length;
+    const gap = a[3] - pav;
+    const cls = gap >= 7 ? "gapo" : (gap <= -7 ? "gapu" : "gapn");
+    return `<tr><td class="ax">${esc(a[0])}<i>${a[2]}점 만점</i></td>
+      <td class="c sf">${fmtScore(a[1])}</td>
+      <td class="c">${s1 ? fmtScore(s1[i][1]) : "-"}</td>
+      <td class="c">${s2 ? fmtScore(s2[i][1]) : "-"}</td>
+      <td class="c av"><b>${avg.toFixed(1)}</b></td>
+      <td class="c ${cls}">${gap > 0 ? "+" : ""}${gap.toFixed(0)}%p</td></tr>`;
+  }).join("");
+  const arS = rptAreaVals(form, P.selfEv);
+  const arE = [P.ev1, P.ev2].filter(Boolean).map(x => rptAreaVals(form, x));
+  const areas = arS.map((a, i) => {
+    const gv = arE.reduce((s, x) => s + x[i][1], 0) / arE.length;
+    const pav = arE.reduce((s, x) => s + x[i][3], 0) / arE.length;
+    return `<div class="ab"><div class="abn">${esc(a[0])} <i>${a[2]}점</i></div>
+      <div class="abv"><b>${gv.toFixed(1)}</b><span>/${a[2]}</span></div>
+      <div class="mb"><div class="mbf" style="width:${pav.toFixed(0)}%;background:#2563eb"></div></div>
+      <div class="abp">${pav.toFixed(0)}%</div></div>`;
+  }).join("");
+  const ev = sa.map((a, i) => [a[0], evs.reduce((s, x) => s + x[i][3], 0) / evs.length]);
+  const order = ev.map((v, i) => i).sort((x, y) => ev[y][1] - ev[x][1]);
+  const strong = [ev[order[0]], ev[order[1]]];
+  const weak = [ev[order[order.length - 2]], ev[order[order.length - 1]]];
+  const totSelf = sa.reduce((s, v) => s + v[1], 0);
+  const totEv = evs.reduce((s, x) => s + x.reduce((t, v) => t + v[1], 0), 0) / evs.length;
+  const d = Math.round((totSelf - totEv) * 10) / 10, ad = Math.abs(d);
+  const dir = d > 0 ? "높게" : "낮게";
+  let per;
+  if (ad < 2) per = ["일치", `차이 <b>${ad.toFixed(1)}점</b>. 본인 인식과 조직의 평가가 <b>거의 일치</b>합니다.`, "pn"];
+  else if (ad < 5) per = ["다소 차이", `자기평가를 평가자 평균보다 <b>${ad.toFixed(1)}점 ${dir}</b> 매겼습니다. 큰 문제는 아니나 <b>어느 영역에서 벌어졌는지</b> 육각형으로 확인해 주세요.`, "pw"];
+  else if (ad < 10) per = ["주의 필요", `자기평가를 평가자 평균보다 <b>${ad.toFixed(1)}점 ${dir}</b> 매겼습니다. 전사 중앙값을 넘는 차이로 <b>면담에서 기대치를 맞출 필요</b>가 있습니다.`, d > 0 ? "po" : "pu"];
+  else per = ["뚜렷한 차이", `자기평가를 평가자 평균보다 <b>${ad.toFixed(1)}점 ${dir}</b> 매겼습니다. 전사 상위권에 드는 큰 격차로 <b>반드시 면담이 필요</b>합니다.`, d > 0 ? "po" : "pu"];
+  const drank = dist.filter(v => Math.abs(v) > ad).length + 1;
+  const distAvg = dist.length ? (dist.reduce((s, v) => s + Math.abs(v), 0) / dist.length).toFixed(1) : "-";
+  const gap12 = (s1 && s2) ? Math.abs(s1.reduce((s, v) => s + v[1], 0) - s2.reduce((s, v) => s + v[1], 0)) : null;
+  const adjTxt = P.adjCats.length ? " · " + P.adjCats.join("·") : "";
+  const cmt = (cls, lbl, who, txt) =>
+    `<div class="cm"><div class="cmt ${cls}">${esc(lbl)} 평가자 총평 <i>${esc(who || "-")}</i></div>
+     <div class="cmb${txt ? "" : " none"}">${txt ? esc(txt) : "— 작성된 총평이 없습니다 —"}</div></div>`;
+  return `
+<section class="page">
+  <div class="ph3">
+    <div class="phl"><span class="co">한양전공(주)</span><h1>인사평가 개인 결과 보고서</h1>
+      <span class="pd">${esc(P.periodLabel)} · ${esc(P.periodRange)}</span></div>
+    <div class="who"><span class="wn">${esc(P.name)}</span><span class="wr">${esc(P.rank)}</span>
+      <span class="wd">${esc(P.dept)}</span><span class="wc">${esc(P.cat)} 평가표</span>
+      <span class="wq">${esc(P.poolName)} 순위 <b>${esc(P.rankTxt)}</b></span></div>
+    <span class="cf">대외비</span>
+  </div>
+  <div class="sc">
+    <div class="sb sfb"><span>자기평가</span><b>${rptNum(P.tSelf)}</b></div>
+    <div class="sb"><span>${esc(P.l1)} · ${esc(P.e1 || "-")}</span><b>${rptNum(P.t1)}</b></div>
+    <div class="sb"><span>${esc(P.l2)} · ${esc(P.e2 || "-")}</span><b>${P.t2 == null ? "미제출" : rptNum(P.t2)}</b></div>
+    <div class="sb"><span>원평균</span><b>${rptNum(P.avg)}</b></div>
+    <div class="sb"><span>가감점${adjTxt}</span><b class="${P.adj > 0 ? "pos" : (P.adj < 0 ? "neg" : "zero")}">${P.adj > 0 ? "+" : ""}${fmtScore(P.adj)}</b></div>
+    <div class="sb fin"><span>최종 평균</span><b>${rptNum(P.fin)}</b></div>
+    <div class="sb grd"><span>등급</span><b class="gd ${rptGc(P.grade)}">${P.grade || "-"}</b></div>
+  </div>
+  <div class="main">
+    <div class="c1"><div class="sect">역량 프로파일 <i>6개 평가영역 · 득점률(%)</i></div>
+      <div class="chart">${rptRadar(axes, series)}</div>
+      <div class="lg"><span><i class="ln self"></i>자기평가</span><span><i class="ln r1"></i>${esc(P.l1)}</span><span><i class="ln r2"></i>${esc(P.l2)}</span></div></div>
+    <div class="c2"><div class="sect">영역별 상세</div>
+      <table class="ax-t"><thead><tr><th style="width:34%">평가영역</th><th style="width:12%">자기</th>
+        <th style="width:11%">${esc(P.l1)}</th><th style="width:11%">${esc(P.l2)}</th>
+        <th style="width:16%">평가자 평균</th><th style="width:16%">인식차</th></tr></thead>
+        <tbody>${rows}</tbody></table>
+      <div class="sect mt">3대 영역 종합</div><div class="areas">${areas}</div></div>
+    <div class="c3"><div class="sect">인재 분석</div>
+      <div class="an st"><div class="ant">강점 영역</div>
+        <div class="anb">${strong.map(v => `<b>${esc(v[0])}</b> ${v[1].toFixed(0)}%`).join(" · ")}</div>
+        <div class="ans">평가자 평균 기준 상위 2개 영역 · 현 직무에서 강점으로 활용 가능</div></div>
+      <div class="an wk"><div class="ant">보완 필요 영역</div>
+        <div class="anb">${weak.map(v => `<b>${esc(v[0])}</b> ${v[1].toFixed(0)}%`).join(" · ")}</div>
+        <div class="ans">다음 반기 육성 목표 설정 시 우선 검토 대상</div></div>
+      <div class="an ${per[2]}"><div class="ant">자기 인식 차이 — ${per[0]}</div>
+        <div class="anb2">${per[1]}</div>${rptGauge(d)}
+        <div class="ans">자기평가 ${fmtScore(totSelf)} − 평가자 평균 ${totEv.toFixed(1)} = <b>${d > 0 ? "+" : "-"}${ad.toFixed(1)}점</b> · 전사 ${dist.length}명 중 <b>${drank}번째</b>로 큰 차이 (전사 평균 격차 ${distAvg}점)${gap12 != null ? ` · 1·2차 평가자 간 차이 ${gap12.toFixed(1)}점` : " · 2차 평가 미제출"}</div></div></div>
+  </div>
+  <div class="cmts">
+    <div class="cm self"><div class="cmt">본인 작성 · 실적 및 업무 내용</div>
+      <div class="cmb${P.selfComment ? "" : " none"}">${P.selfComment ? esc(P.selfComment) : "— 작성된 내용이 없습니다 —"}</div></div>
+    ${cmt("r1", P.l1, P.e1, P.c1)}
+    ${cmt("r2", P.l2, P.e2, P.c2)}
+  </div>
+  <div class="foot"><div class="fn">※ 최종 평균 = 원평균 + 가감점(근태·안전·교육) · 등급은 ${esc(P.poolName)} 내 상대평가 기준 &nbsp;|&nbsp; 득점률 = 영역 득점 ÷ 배점 · 인식차 = 자기평가 득점률 − 평가자 평균 득점률<span class="pgno">${pno} / ${ptot}</span></div></div>
+</section>`;
+}
+
+/* ---- 개인 보고서용 데이터 조립 ---- */
+function rptBuildPerson(emp, period, ctx) {
+  const form = getFormForEmp(period, emp);
+  const selfEv = getEvaluation(emp.dept, emp.name, SELF_ROUND, period);
+  if (!isEvalSubmitted(selfEv)) return null;
+  const isExec = (emp.rank === "부장" || emp.rank === "이사");
+  let ev1 = null, ev2 = null, e1 = "", e2 = "", l1 = "1차", l2 = "2차";
+  if (isExec) {
+    l1 = "임원 1차"; l2 = "임원 2차";
+    ["3차-조규오", "3차-임웅걸", "3차-이석원"].forEach(r => {
+      const x = getEvaluation(emp.dept, emp.name, r, period);
+      if (isEvalSubmitted(x) && !ev1) { ev1 = x; e1 = x.evaluatorName || ""; }
+    });
+    const x4 = getEvaluation(emp.dept, emp.name, "4차", period);
+    if (isEvalSubmitted(x4)) { ev2 = x4; e2 = x4.evaluatorName || ""; }
+    else { e2 = "양정일 대표이사"; }
+  } else {
+    const a = getEvaluation(emp.dept, emp.name, "1차", period);
+    const b = getEvaluation(emp.dept, emp.name, "2차", period);
+    if (isEvalSubmitted(a)) { ev1 = a; e1 = a.evaluatorName || ""; }
+    if (isEvalSubmitted(b)) { ev2 = b; e2 = b.evaluatorName || ""; }
+    const evs = getEvaluators();
+    if (!e1 && evs[emp.dept] && evs[emp.dept]["1차"]) e1 = (evs[emp.dept]["1차"].name || "") + " " + (evs[emp.dept]["1차"].title || "");
+    if (!e2 && evs[emp.dept] && evs[emp.dept]["2차"]) e2 = (evs[emp.dept]["2차"].name || "") + " " + (evs[emp.dept]["2차"].title || "");
+  }
+  if (!ev1 && !ev2) return null;
+  const det = getAdjustmentDetail(period, emp.dept, emp.name) || {};
+  const adjCats = Object.keys(det).filter(k => Number(det[k].points) !== 0);
+  return {
+    name: emp.name, rank: emp.rank, dept: emp.dept, cat: emp.rankCategory,
+    form, selfEv, ev1, ev2, e1: e1.trim(), e2: e2.trim(), l1, l2,
+    tSelf: selfEv.total, t1: ev1 ? ev1.total : null, t2: ev2 ? ev2.total : null,
+    avg: ctx.avg, adj: ctx.adj, adjCats, fin: ctx.fin, grade: ctx.grade,
+    rankTxt: ctx.rankTxt, poolName: isExec ? "임원 풀" : "부서",
+    selfComment: selfEv.comment || "", c1: ev1 ? (ev1.comment || "") : "", c2: ev2 ? (ev2.comment || "") : "",
+    periodLabel: periodLabel(period), periodRange: ctx.periodRange, isExec
+  };
+}
+
+/* ---- 부서 블록 / 부서 페이지 ---- */
+function rptAdjCell(period, dept, name, adj) {
+  const det = getAdjustmentDetail(period, dept, name) || {};
+  const cats = Object.keys(det).filter(k => Number(det[k].points) !== 0);
+  const cls = adj > 0 ? "pos" : (adj < 0 ? "neg" : "zero");
+  const txt = (adj > 0 ? "+" : "") + fmtScore(adj);
+  return `<td class="c ${cls}">${txt}${cats.length ? `<i class="adjc">${esc(cats.join("·"))}</i>` : ""}</td>`;
+}
+function rptDeptBlock(dept, results, period) {
+  const dist = gradeDistribution(results);
+  const tgt = results.filter(r => r.grade);
+  const ex = results.length - tgt.length;
+  const avg = tgt.length ? (tgt.reduce((s, r) => s + (r.avgAdjusted != null ? r.avgAdjusted : r.avg), 0) / tgt.length).toFixed(1) : "-";
+  const evs = getEvaluators();
+  const nm = (d, r) => (evs[d] && evs[d][r] && evs[d][r].name) ? `${evs[d][r].name} ${evs[d][r].title || ""}`.trim() : "(공석)";
+  const seg = ["S", "A", "B", "C"].filter(g => dist[g].length)
+    .map(g => `<div class="seg ${rptGc(g)}" style="flex:${dist[g].length}">${g} ${dist[g].length}</div>`).join("");
+  const body = results.map(r => `
+    <tr class="${r.grade ? "" : "ex"}">
+      <td class="c">${r.grade ? r.rankIndex : "-"}</td>
+      <td class="nm">${esc(r.empName)}</td>
+      <td class="c">${esc(r.empRank)}</td>
+      <td class="c cat">${esc(r.rankCategory)}</td>
+      <td class="c self">${renderSelfScoreCell(r).replace(/class="chip[^"]*"/g, 'class="mini"')}</td>
+      <td class="c">${rptNum(r.score1)}</td>
+      <td class="c">${rptNum(r.score2)}</td>
+      <td class="c">${r.avg != null ? r.avg.toFixed(1) : "-"}</td>
+      ${rptAdjCell(period, dept, r.empName, r.adjustment || 0)}
+      <td class="c fin">${r.avgAdjusted != null ? r.avgAdjusted.toFixed(1) : "-"}</td>
+      <td class="c">${r.grade ? `<span class="gd ${rptGc(r.grade)}">${r.grade}</span>` : "-"}</td>
+    </tr>`).join("");
+  return `<div class="blk">
+    <div class="bh"><span class="bn">${esc(dept)}</span>
+      <span class="bc">${tgt.length}명${ex ? ` <i>· 평가 제외 ${ex}명</i>` : ""}</span><span class="bdot">|</span>
+      <span class="bev">1차 <b>${esc(nm(dept, "1차"))}</b> · 2차 <b>${esc(nm(dept, "2차"))}</b></span><span class="bdot">|</span>
+      <span class="bmode">${esc(gradingModeLabel(results))}</span>
+      <span class="bavg">부서 평균 <b>${avg}</b></span><div class="bar">${seg}</div></div>
+    <table class="rep"><thead><tr>
+      <th class="w1">순위</th><th class="w2">이름</th><th class="w3">직급</th><th class="w4">평가표</th>
+      <th class="w5">자기평가</th><th class="w6">1차</th><th class="w6">2차</th>
+      <th class="w7">원평균</th><th class="w8">가감점</th><th class="w9">최종 평균</th><th class="w10">등급</th>
+    </tr></thead><tbody>${body}</tbody></table></div>`;
+}
+// 인원수 기준 자동 페이지 배치 (first-fit-decreasing)
+function rptPackDepts(sizes) {
+  const H = n => 22 + n * 6.6, CAP = 170;
+  const names = Object.keys(sizes).sort((a, b) => sizes[b] - sizes[a]);
+  const pages = [], used = [];
+  names.forEach(d => {
+    const h = H(sizes[d]);
+    let idx = pages.findIndex((_, i) => used[i] + h <= CAP);
+    if (idx < 0) { pages.push([]); used.push(0); idx = pages.length - 1; }
+    pages[idx].push(d); used[idx] += h;
+  });
+  return pages;
+}
+
+/* ---- 전직원 순위 페이지 ---- */
+function rptRankPage(allRows, period, pno, ptot) {
+  const items = allRows.filter(r => r.grade).slice().sort((a, b) => {
+    const ka = a.avgAdjusted != null ? a.avgAdjusted : a.avg;
+    const kb = b.avgAdjusted != null ? b.avgAdjusted : b.avg;
+    return kb - ka;
+  });
+  if (!items.length) return "";
+  const n = items.length;
+  const fin = r => (r.avgAdjusted != null ? r.avgAdjusted : r.avg);
+  const aa = (items.reduce((s, r) => s + fin(r), 0) / n).toFixed(1);
+  const top = items[0], bot = items[n - 1];
+  const g = {}; ["S", "A", "B", "C"].forEach(k => g[k] = items.filter(r => r.grade === k).length);
+  const half = Math.ceil(n / 2);
+  const col = (chunk, start) => `<table class="rk-t"><thead><tr>
+      <th style="width:9%">순위</th><th style="width:21%">부서</th><th style="width:14%">이름</th>
+      <th style="width:10%">직급</th><th style="width:10%">자기</th><th style="width:10%">원평균</th>
+      <th style="width:11%">가감점</th><th style="width:9%">최종</th><th style="width:9%">등급</th>
+    </tr></thead><tbody>${chunk.map((r, k) => `
+      <tr class="${(start + k) <= 3 ? "hi" : ""}">
+        <td class="c rk">${start + k}</td>
+        <td class="dp">${esc(String(r.dept).replace("에너지", ""))}</td>
+        <td class="nm">${esc(r.empName)}</td>
+        <td class="c">${esc(r.empRank)}</td>
+        <td class="c self">${r.selfSubmitted ? fmtScore(r.selfScore) : "-"}</td>
+        <td class="c">${r.avg != null ? r.avg.toFixed(1) : "-"}</td>
+        ${rptAdjCell(period, r.dept, r.empName, r.adjustment || 0)}
+        <td class="c fin">${fin(r).toFixed(1)}</td>
+        <td class="c"><span class="gd ${rptGc(r.grade)}">${r.grade}</span></td></tr>`).join("")}
+    </tbody></table>`;
+  return `
+<section class="page">
+  <div class="ph2"><div class="ph-l"><span class="co">한양전공(주)</span><h2>${esc(periodLabel(period))} 인사평가 결과 — 전직원 종합 순위</h2></div>
+    <span class="cf">대외비</span></div>
+  <div class="rk-sum">
+    <div class="rs"><span>평가 대상</span><b>${n}명</b></div>
+    <div class="rs"><span>전사 평균</span><b>${aa}</b></div>
+    <div class="rs"><span>최고점</span><b>${fin(top).toFixed(1)}</b><i>${esc(top.empName)} · ${esc(top.dept)}</i></div>
+    <div class="rs"><span>최저점</span><b>${fin(bot).toFixed(1)}</b><i>${esc(bot.empName)} · ${esc(bot.dept)}</i></div>
+    <div class="rs"><span>등급 분포</span><b>S ${g.S} · A ${g.A} · B ${g.B} · C ${g.C}</b></div>
+  </div>
+  <div class="rk-wrap"><div class="rk-col">${col(items.slice(0, half), 1)}</div>
+    <div class="rk-col">${col(items.slice(half), half + 1)}</div></div>
+  <div class="pf"><span>※ 최종 평균 기준 전사 순위. <b>등급은 부서별 상대평가</b>로 산정되므로 전사 순위와 일치하지 않을 수 있습니다.</span><span>${pno} / ${ptot}</span></div>
+</section>`;
+}
+
+/* ---- 전체 보고서 생성 ----
+   opts = { scope:"all"|"dept"|"person", dept, empName, includeSummary }  */
+function buildReportHtml(opts) {
+  opts = opts || {};
+  const period = resolveViewPeriod();
+  const pLabel = periodLabel(period);
+  const half = String(period).endsWith("H1");
+  const periodRange = half ? `${String(period).slice(0,4)}. 10. 1. ~ ${Number(String(period).slice(0,4))+1}. 3. 31.`
+                           : `${String(period).slice(0,4)}. 4. 1. ~ ${String(period).slice(0,4)}. 9. 30.`;
+  const depts = [...new Set(EMPLOYEES.filter(e => !isExecEmp(e)).map(e => e.dept))];
+  const deptRes = {}; depts.forEach(d => deptRes[d] = computeDeptResults(d, period));
+  const execRes = computeExecResults(period);
+  const dist = rptSelfGapDist(period);
+
+  // ── 요약부(표지 + 부서별 + 순위) ──
+  let summary = [];
+  if (opts.includeSummary !== false && opts.scope === "all") {
+    const sizes = {}; depts.forEach(d => { if (deptRes[d].length) sizes[d] = deptRes[d].length; });
+    summary = rptPackDepts(sizes).map(grp => grp);
+  }
+  // ── 개인 대상자 ──
+  let targets = [];
+  const pushEmp = (e, ctx) => { const p = rptBuildPerson(e, period, ctx); if (p) targets.push(p); };
+  const deptOrder = summary.length ? [].concat.apply([], summary) : depts;
+  const wantDept = opts.scope === "dept" ? opts.dept : null;
+  const wantName = opts.scope === "person" ? opts.empName : null;
+  (wantDept ? [wantDept] : deptOrder).forEach(d => {
+    (deptRes[d] || []).forEach(r => {
+      if (wantName && r.empName !== wantName) return;
+      const e = EMPLOYEES.find(x => x.dept === d && x.name === r.empName);
+      if (!e || !r.grade) return;
+      pushEmp(e, { avg: r.avg, adj: r.adjustment || 0, fin: r.avgAdjusted, grade: r.grade,
+        rankTxt: `${r.rankIndex} / ${deptRes[d].filter(x => x.grade).length}`, periodRange });
+    });
+  });
+  if (!wantDept || wantDept === "임원") {
+    execRes.forEach(r => {
+      if (wantName && r.empName !== wantName) return;
+      if (wantDept === "임원" || !wantDept) {
+        const e = EMPLOYEES.find(x => x.dept === r.dept && x.name === r.empName);
+        if (!e || !r.grade) return;
+        pushEmp(e, { avg: r.avg, adj: r.adjustment || 0, fin: r.avgAdjusted, grade: r.grade,
+          rankTxt: `${r.rankIndex} / ${execRes.filter(x => x.grade).length}`, periodRange });
+      }
+    });
+  }
+
+  const nSummary = summary.length + (summary.length ? 1 : 0);
+  const TOT = nSummary + targets.length;
+  const pages = [];
+  if (summary.length) {
+    pages.push(`
+<section class="page cover">
+  <div class="cv-co">한양전공(주)</div>
+  <div class="cv-mid">
+    <div class="cv-year">${esc(pLabel)}</div>
+    <h1 class="cv-t">인사평가 결과 보고서</h1>
+    <div class="cv-period">평가기간 &nbsp;${esc(periodRange.replace("~", "&nbsp;~&nbsp;"))}</div>
+    <table class="sign"><tr><th>작성</th><th>부서장</th><th>대표이사</th><th>회장</th></tr>
+      <tr><td></td><td></td><td></td><td></td></tr></table>
+  </div>
+</section>`);
+    summary.forEach((grp, i) => {
+      pages.push(`
+<section class="page">
+  <div class="ph2"><div class="ph-l"><span class="co">한양전공(주)</span><h2>${esc(pLabel)} 인사평가 결과</h2></div>
+    <span class="cf">대외비</span></div>
+  <div class="stack">${grp.map(d => rptDeptBlock(d, deptRes[d], period)).join("")}</div>
+  <div class="pf"><span>최종 평균 = 원평균(1·2차 평균) + 가감점(근태·안전·교육) · 등급은 최종 평균 기준</span><span>${i + 1} / ${TOT}</span></div>
+</section>`);
+    });
+    const allRows = [].concat.apply([], depts.map(d => deptRes[d]));
+    pages.push(rptRankPage(allRows, period, summary.length + 1, TOT));
+  }
+  targets.forEach((p, i) => pages.push(rptPersonPage(p, nSummary + i + 1, TOT, dist)));
+  return { html: pages.join(""), count: pages.length, persons: targets.length };
+}
+
+/* ---- 보고서 전용 CSS ---- */
+const RPT_CSS = `
+:root{--pri:#1e3a8a;--pri2:#172554;--bd:#cbd5e1;--muted:#6b7280}
+*{box-sizing:border-box}
+body{margin:0;background:#e5e7eb;color:#111827;font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif}
+.rptbar{position:sticky;top:0;z-index:10;background:#fff;border-bottom:1px solid var(--bd);padding:12px 18px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.rptbar h2{margin:0;font-size:15px;color:var(--pri)}.rptbar .sp{flex:1}
+.rptbar button{background:var(--pri);color:#fff;border:0;border-radius:8px;padding:9px 16px;font-size:13.5px;font-weight:700;cursor:pointer}
+.rptbar .hint{font-size:12px;color:var(--muted)}
+.sheet{padding:20px 10px 40px;display:flex;flex-direction:column;align-items:center;gap:18px}
+.page{background:#fff;width:297mm;height:210mm;padding:9mm 11mm 7mm;box-shadow:0 4px 16px rgba(0,0,0,.18);display:flex;flex-direction:column;overflow:hidden}
+.cover{padding:16mm 18mm 16mm}
+.cv-co{font-size:15px;font-weight:800;color:var(--pri);letter-spacing:.1em}
+.cv-mid{flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center}
+.cv-year{font-size:19px;color:var(--muted);font-weight:700;letter-spacing:.14em}
+.cv-t{margin:12px 0 0;font-size:50px;color:var(--pri);letter-spacing:-.03em;font-weight:800}
+.cv-t::after{content:"";display:block;width:150px;height:4px;background:var(--pri);margin:20px auto 0}
+.cv-period{margin-top:20px;font-size:16px;color:#374151}
+table.sign{border-collapse:collapse;margin-top:26px}
+table.sign th,table.sign td{border:1px solid var(--bd);width:80px;text-align:center;font-size:11px}
+table.sign th{background:#f1f5f9;padding:6px;color:#334155;font-weight:700}
+table.sign td{height:56px}
+.ph2{display:flex;justify-content:space-between;align-items:center;border-bottom:2.5px solid var(--pri);padding-bottom:5px;margin-bottom:7px}
+.ph-l{display:flex;align-items:baseline;gap:10px}
+.co{font-size:11px;color:var(--muted);font-weight:700;letter-spacing:.06em}
+.ph2 h2{margin:0;font-size:16px;color:var(--pri)}
+.cf{border:1.5px solid #dc2626;color:#dc2626;font-size:10px;font-weight:800;padding:1px 8px;border-radius:4px;flex:none}
+.stack{flex:1;min-height:0;display:flex;flex-direction:column;gap:5mm}
+.bh{display:flex;align-items:center;gap:8px;border-left:5px solid var(--pri);padding-left:10px;margin-bottom:4px;flex-wrap:wrap}
+.bn{font-size:16px;font-weight:800}
+.bc{font-size:11.5px;color:var(--muted)}.bc i{font-style:normal;color:#9ca3af}
+.bdot{color:#d1d5db;font-size:11px}
+.bev{font-size:11.5px;color:var(--muted)}.bev b{color:#374151;font-weight:700}
+.bmode{font-size:11px;color:#9ca3af}
+.bavg{margin-left:auto;font-size:11.5px;color:var(--muted)}.bavg b{color:var(--pri);font-size:15px}
+.bar{display:flex;height:17px;border-radius:4px;overflow:hidden;border:1px solid var(--bd);width:150px}
+.seg{display:flex;align-items:center;justify-content:center;color:#fff;font-size:10px;font-weight:800}
+.seg.gs{background:#7c3aed}.seg.ga{background:#2563eb}.seg.gb{background:#0891b2}.seg.gc{background:#f59e0b}
+table.rep{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed}
+table.rep th,table.rep td{border:1px solid var(--bd);padding:4.5px 5px}
+table.rep th{background:#eef2ff;color:var(--pri2);font-size:11px;font-weight:700}
+table.rep tbody tr:nth-child(even){background:#f8fafc}
+.w1{width:6%}.w2{width:13%}.w3{width:8%}.w4{width:11%}.w5{width:10%}.w6{width:8%}.w7{width:9%}.w8{width:8%}.w9{width:11%}.w10{width:8%}
+.c{text-align:center}
+.nm{font-weight:800;padding-left:10px}
+.cat{font-size:11px;color:var(--muted)}
+.self{color:#166534;font-weight:700}
+.self .mini{color:#9ca3af;font-weight:500;font-size:10px;background:none}
+.fin{font-weight:800;color:var(--pri);font-size:14px}
+.pos{color:#059669;font-weight:700}.neg{color:#dc2626;font-weight:700}.zero{color:#cbd5e1}
+.adjc{display:block;font-style:normal;font-size:8.5px;color:#64748b;font-weight:600}
+tr.ex{color:#9ca3af;background:#f9fafb !important}
+tr.ex .nm{font-weight:600}tr.ex .self{color:#9ca3af;font-weight:500}
+.gd{display:inline-block;min-width:20px;padding:1px 8px;border-radius:9px;font-size:11.5px;font-weight:800;color:#fff}
+.gd.gs{background:#7c3aed}.gd.ga{background:#2563eb}.gd.gb{background:#0891b2}.gd.gc{background:#f59e0b}
+.gd.gn{background:#e5e7eb;color:#9ca3af}
+.rk-sum{display:flex;gap:7px;margin-bottom:6px}
+.rs{flex:1;border:1px solid var(--bd);border-radius:7px;padding:6px 10px;background:#f8fafc}
+.rs span{display:block;font-size:10px;color:var(--muted)}
+.rs b{font-size:15px;color:var(--pri)}
+.rs i{font-style:normal;font-size:10px;color:var(--muted);margin-left:5px}
+.rk-wrap{flex:1;min-height:0;display:grid;grid-template-columns:1fr 1fr;gap:0 8mm}
+table.rk-t{width:100%;border-collapse:collapse;font-size:11.5px;table-layout:fixed}
+table.rk-t th,table.rk-t td{border:1px solid var(--bd);padding:3px 4px}
+table.rk-t th{background:#eef2ff;color:var(--pri2);font-size:10px;font-weight:700}
+table.rk-t tbody tr:nth-child(even){background:#f8fafc}
+table.rk-t tr.hi{background:#fffbeb !important}
+table.rk-t tr.hi .rk{color:#b45309;font-weight:900}
+.rk{font-weight:800;color:var(--pri)}
+.dp{font-size:10.5px;color:#4b5563;padding-left:6px}
+.ph3{display:flex;justify-content:space-between;align-items:center;gap:14px;border-bottom:2.5px solid var(--pri);padding-bottom:6px}
+.phl{display:flex;align-items:baseline;gap:9px;flex:none}
+.ph3 h1{margin:0;font-size:17px;color:var(--pri)}
+.pd{font-size:9.5px;color:var(--muted)}
+.who{display:flex;align-items:baseline;gap:8px;padding:4px 12px;background:#f1f5f9;border-radius:7px;border-left:5px solid var(--pri);flex:1}
+.wn{font-size:17px;font-weight:800}.wr{font-size:12px;font-weight:700;color:#374151}
+.wd,.wc{font-size:11.5px;color:var(--muted)}
+.wq{margin-left:auto;font-size:11px;color:var(--muted)}.wq b{color:var(--pri);font-size:14px}
+.sc{display:flex;gap:5px;margin:7px 0}
+.sb{flex:1;border:1px solid var(--bd);border-radius:7px;padding:5px 4px;text-align:center;background:#fcfdff}
+.sb span{display:block;font-size:9px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sb b{font-size:15px;color:#374151}
+.sb.sfb{border-color:#86efac;background:#f0fdf4}.sb.sfb b{color:#166534}
+.sb.fin{border-color:var(--pri);background:#eef2ff}.sb.fin b{color:var(--pri);font-size:18px}
+.sb .pos{color:#059669}.sb .zero{color:#9ca3af}
+.sect{font-size:11.5px;font-weight:800;color:var(--pri);border-left:4px solid var(--pri);padding-left:7px;margin-bottom:5px}
+.sect i{font-style:normal;font-weight:500;color:var(--muted);font-size:10px;margin-left:5px}
+.sect.mt{margin-top:8px}
+.main{display:grid;grid-template-columns:0.92fr 1.12fr 1.05fr;gap:9px;height:96mm}
+.c1,.c2,.c3{min-width:0;display:flex;flex-direction:column}
+.chart{flex:1;display:flex;align-items:center;justify-content:center;min-height:0}
+.chart svg{max-height:100%}
+.lg{display:flex;justify-content:center;gap:12px;font-size:10px;color:#374151;margin-top:2px}
+.lg i{display:inline-block;width:13px;height:2.5px;vertical-align:middle;margin-right:4px}
+.ln.self{background:#059669}.ln.r1{background:#2563eb}.ln.r2{background:#ea580c}
+table.ax-t{width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed}
+table.ax-t th,table.ax-t td{border:1px solid var(--bd);padding:5px}
+table.ax-t th{background:#eef2ff;color:var(--pri2);font-size:10px;font-weight:700;text-align:center;line-height:1.2}
+.ax{font-weight:700;padding-left:6px !important}
+.ax i{font-style:normal;font-weight:400;color:#9ca3af;font-size:9.5px;margin-left:4px}
+.av b{color:var(--pri);font-size:13px}
+.gapo{color:#dc2626;font-weight:700}.gapu{color:#2563eb;font-weight:700}.gapn{color:#9ca3af}
+.mb{height:9px;background:#e2e8f0;border-radius:5px;overflow:hidden}
+.mbf{height:100%;border-radius:5px}
+.areas{display:flex;gap:5px}
+.ab{flex:1;border:1px solid var(--bd);border-radius:6px;padding:5px 7px;background:#fcfdff}
+.abn{font-size:9.5px;color:#334155;font-weight:700}.abn i{font-style:normal;color:#9ca3af;font-weight:400}
+.abv{margin:1px 0 3px}.abv b{font-size:14px;color:var(--pri)}.abv span{font-size:9px;color:var(--muted)}
+.abp{text-align:right;font-size:9px;color:var(--muted);margin-top:2px}
+.an{border:1px solid var(--bd);border-radius:7px;padding:6px 9px;margin-bottom:5px}
+.an:last-child{margin-bottom:0}
+.an.st{background:#f0fdf4;border-color:#86efac}
+.an.wk{background:#fff7ed;border-color:#fdba74}
+.an.po{background:#fef2f2;border-color:#fca5a5}
+.an.pu{background:#eff6ff;border-color:#93c5fd}
+.an.pw{background:#fefce8;border-color:#fde047}
+.an.pn{background:#f8fafc}
+.ant{font-size:10px;font-weight:800;color:#334155;margin-bottom:2px}
+.anb{font-size:11.5px;color:#111827}
+.anb2{font-size:10.5px;line-height:1.55;color:#374151}
+.ans{font-size:8.5px;color:var(--muted);margin-top:2px;line-height:1.5}.ans b{color:#475569}
+.gg{display:block;margin:4px 0 2px}
+.cmts{display:grid;grid-template-columns:1.25fr 1fr 1fr;gap:8px;flex:1;min-height:0;margin-top:8px}
+.cm{min-height:0}
+.cmt{font-size:10px;font-weight:800;color:#2563eb;border-left:3px solid #2563eb;padding-left:6px;margin-bottom:3px}
+.cmt.r2{border-left-color:#ea580c;color:#ea580c}
+.cm.self .cmt{border-left-color:#059669;color:#059669}
+.cmt i{font-style:normal;font-weight:500;color:var(--muted);margin-left:4px}
+.cmb{white-space:pre-wrap;font-size:10px;line-height:1.6;color:#374151;background:#f9fafb;border:1px solid #eef2f7;border-radius:5px;padding:6px 8px;max-height:100%;overflow:hidden}
+.cmb.none{color:#cbd5e1;font-style:italic}
+.foot{margin-top:6px;border-top:1px solid var(--bd);padding-top:4px}
+.fn{font-size:8px;color:var(--muted);line-height:1.7;position:relative}
+.pgno{position:absolute;right:0;top:0;font-weight:700}
+.pf{margin-top:auto;border-top:1px solid var(--bd);padding-top:4px;display:flex;justify-content:space-between;font-size:9.5px;color:var(--muted)}
+@media print{
+  @page{size:A4 landscape;margin:0}
+  body{background:#fff}.rptbar{display:none}.sheet{padding:0;gap:0}
+  .page{box-shadow:none;page-break-after:always;break-after:page}
+  .page:last-child{page-break-after:auto;break-after:auto}
+}`;
+
+/* ---- 새 창으로 열기 ---- */
+function openReport(opts) {
+  let res;
+  try { res = buildReportHtml(opts); }
+  catch (e) { alert("보고서 생성 중 오류가 발생했습니다.\n" + e.message); return; }
+  if (!res.count) { alert("출력할 내용이 없습니다.\n자기평가와 1·2차 평가가 제출된 인원만 개인 보고서가 생성됩니다."); return; }
+  const w = window.open("", "_blank");
+  if (!w) { alert("팝업이 차단되었습니다. 브라우저 주소창의 팝업 차단을 해제한 뒤 다시 시도해 주세요."); return; }
+  const title = (opts && opts.title) || "인사평가 결과 보고서";
+  w.document.open();
+  w.document.write(`<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"/>
+<title>${esc(title)}</title><style>${RPT_CSS}</style></head><body>
+<div class="rptbar"><h2>${esc(title)}</h2>
+  <span class="hint">A4 가로 · 총 ${res.count}장${res.persons ? ` (개인 보고서 ${res.persons}명)` : ""} · 인쇄 대화상자에서 <b>용지 가로</b>, <b>배경 그래픽</b> 켜기를 확인해 주세요</span>
+  <span class="sp"></span><button onclick="window.print()">🖨 인쇄 / PDF 저장</button></div>
+<div class="sheet">${res.html}</div></body></html>`);
+  w.document.close();
+}
+function openReportAll() { openReport({ scope: "all", title: "인사평가 결과 보고서 (전체)" }); }
+function openReportDept(sel) {
+  const d = sel && sel.value ? sel.value : (document.getElementById("rpt-dept") || {}).value;
+  if (!d) { alert("부서를 선택해 주세요."); return; }
+  openReport({ scope: "dept", dept: d, title: `인사평가 개인 결과 보고서 — ${d}` });
+}
+function openReportPerson(dept, name) {
+  openReport({ scope: "person", dept, empName: name, title: `인사평가 개인 결과 보고서 — ${name}` });
+}
+
 window.openResultDetail = openResultDetail;
 window.closeResultDetail = closeResultDetail;
+window.openReport = openReport;
+window.openReportAll = openReportAll;
+window.openReportDept = openReportDept;
+window.openReportPerson = openReportPerson;
 
 async function bootstrap() {
   // 초기 로딩 스피너
