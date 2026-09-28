@@ -725,6 +725,26 @@ const EXEC_TARGETS = {
     { dept: "수배전설계부", name: "노영훈" },
     { dept: "품질보증부",   name: "이병수" }
   ],
+  // 임원 1차 (서버 명단 로드 후 buildExecR1Targets() 로 재구성됨 · 아래는 fallback)
+  "임원1차-김소윤": [
+    { dept: "경영지원부",   name: "강유석" }
+  ],
+  "임원1차-홍두영": [
+    { dept: "부설연구소",   name: "정택기" },
+    { dept: "부설연구소",   name: "조민웅" }
+  ],
+  "임원1차-최재웅": [
+    { dept: "신재생에너지영업부", name: "송지훈" },
+    { dept: "생산관리부",   name: "양정민" },
+    { dept: "자재관리부",   name: "전기훈" },
+    { dept: "수배전설계부", name: "노영훈" },
+    { dept: "품질보증부",   name: "이병수" }
+  ],
+  "임원1차-이병수": [
+    { dept: "품질보증부",   name: "유창근" },
+    { dept: "품질보증부",   name: "최인태" },
+    { dept: "품질보증부",   name: "정영교" }
+  ],
   "4차": [
     { dept: "경영지원부",   name: "강유석" },
     { dept: "자재관리부",   name: "전기훈" },
@@ -816,7 +836,6 @@ function rebuildFromEmployees(serverEmps) {
 }
 // 초기: 하드코딩 EXEC_TARGETS 로 EXEC_SET 세팅 (서버 로드 실패 대비)
 (function() {
-  buildExecR1Targets();
   Object.values(EXEC_TARGETS).forEach(arr => arr.forEach(t => EXEC_SET.add(t.dept + "|" + t.name)));
 })();
 
