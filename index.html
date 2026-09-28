@@ -5573,7 +5573,7 @@ function renderAdminData(body) {
     </div>
     <div class="flex" style="gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
       <button class="small" onclick="openReportAll()">📄 전체 보고서 인쇄 (표지 + 부서 + 순위 + 개인 전원)</button>
-      <select id="rpt-dept" style="padding:9px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px">
+      <select id="rpt-dept" style="padding:9px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;width:auto;min-width:200px;flex:none">
         <option value="">부서 선택…</option>
         ${[...new Set(EMPLOYEES.filter(e=>!isExecEmp(e)).map(e=>e.dept))].map(d=>`<option value="${esc(d)}">${esc(d)}</option>`).join("")}
         <option value="임원">임원 (부장·이사)</option>
@@ -5581,7 +5581,7 @@ function renderAdminData(body) {
       <button class="small secondary" onclick="openReportDept()">👤 선택 부서 개인 보고서</button>
     </div>
     <div class="flex" style="gap:10px;flex-wrap:wrap;align-items:center">
-      <select id="rpt-emp" style="padding:9px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;min-width:220px">
+      <select id="rpt-emp" style="padding:9px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;width:auto;min-width:260px;flex:none">
         <option value="">직원 선택…</option>
         ${EMPLOYEES.filter(e=>e.active!==false).slice().sort((a,b)=>a.dept.localeCompare(b.dept,"ko")||a.name.localeCompare(b.name,"ko")).map(e=>`<option value="${esc(e.dept)}|${esc(e.name)}">${esc(e.dept)} · ${esc(e.name)} ${esc(e.rank)}</option>`).join("")}
       </select>
@@ -6712,7 +6712,7 @@ function buildReportHtml(opts) {
   <div class="cv-mid">
     <div class="cv-year">${esc(pLabel)}</div>
     <h1 class="cv-t">인사평가 결과 보고서</h1>
-    <div class="cv-period">평가기간 &nbsp;${esc(periodRange.replace("~", "&nbsp;~&nbsp;"))}</div>
+    <div class="cv-period">평가기간 &nbsp;${esc(periodRange).replace("~", "&nbsp;~&nbsp;")}</div>
     <table class="sign"><tr><th>작성</th><th>부서장</th><th>대표이사</th><th>회장</th></tr>
       <tr><td></td><td></td><td></td><td></td></tr></table>
   </div>
