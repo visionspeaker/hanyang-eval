@@ -5446,6 +5446,7 @@ document.addEventListener("keydown", e => { if (e.key === "Escape") closeResultD
 
 // 가감점(근태·안전·교육 합계) 셀
 function renderAdjCell(r) {
+  if (r.adjApplied === false) return `<span style="color:var(--muted)" title="임원 평가는 가감점을 반영하지 않습니다">미적용</span>`;
   const adj = Number(r.adjustment) || 0;
   if (adj > 0) return `<span style="color:#059669;font-weight:700">+${fmtScore(adj)}</span>`;
   if (adj < 0) return `<span style="color:#dc2626;font-weight:700">${fmtScore(adj)}</span>`;
@@ -6223,12 +6224,14 @@ function computeExecResults(period) {
     if (score3 !== null) parts.push(score3);
     if (score4 !== null) parts.push(score4);
     const avg = parts.length ? parts.reduce((a,b)=>a+b,0)/parts.length : null;
-    // 임원 대상자도 가감점 반영 (없으면 0)
-    const adjustment = getAdjustmentTotal(period, e.dept, e.name);
-    const avgAdjusted = avg !== null ? avg + adjustment : null;
+    // ★ 임원(부장·이사) 평가는 1~3차 다단계 평가이므로 가감점(근태·안전·교육)을 반영하지 않는다.
+    //    가감점 데이터 자체는 보존하되 등급 산정에는 쓰지 않는다.
+    const adjustment = 0;
+    const avgAdjusted = avg;
     return {
       dept: e.dept, empName: e.name, empRank: e.rank, rankCategory: e.rankCategory,
       score1, eval1Name,
+      adjApplied: false,               // 임원 평가는 가감점 미적용
       score3, score4, eval3Name,
       eval4Name: p3.name,
       selfScore: isEvalSubmitted(rSelf) ? rSelf.total : null,
@@ -6586,7 +6589,9 @@ function rptPersonPage(P, pno, ptot, dist) {
     <div class="sb"><span>${esc(P.l2)} · ${esc(P.e2 || "-")}</span><b>${P.t2 == null ? "미제출" : rptNum(P.t2)}</b></div>
     ${hasR3 ? `<div class="sb"><span>${esc(P.l3)} · ${esc(P.e3 || "-")}</span><b>${P.t3 == null ? "미제출" : rptNum(P.t3)}</b></div>` : ""}
     <div class="sb"><span>원평균</span><b>${rptNum(P.avg)}</b></div>
-    <div class="sb"><span>가감점${adjTxt}</span><b class="${P.adj > 0 ? "pos" : (P.adj < 0 ? "neg" : "zero")}">${P.adj > 0 ? "+" : ""}${fmtScore(P.adj)}</b></div>
+    <div class="sb"><span>가감점${P.isExec ? "" : adjTxt}</span>${P.isExec
+      ? `<b class="zero" style="font-size:12px" title="임원 평가는 가감점을 반영하지 않습니다">미적용</b>`
+      : `<b class="${P.adj > 0 ? "pos" : (P.adj < 0 ? "neg" : "zero")}">${P.adj > 0 ? "+" : ""}${fmtScore(P.adj)}</b>`}</div>
     <div class="sb fin"><span>최종 평균</span><b>${rptNum(P.fin)}</b></div>
     <div class="sb grd"><span>등급</span><b class="gd ${rptGc(P.grade)}">${P.grade || "-"}</b></div>
   </div>
@@ -6621,7 +6626,9 @@ function rptPersonPage(P, pno, ptot, dist) {
       ${hasR3 ? cmt("r3", P.l3, P.e3, P.c3) : ""}
     </div>
   </div>
-  <div class="foot"><div class="fn">※ 최종 평균 = 원평균 + 가감점(근태·안전·교육) · 등급은 ${esc(P.poolName)} 내 상대평가 기준 &nbsp;|&nbsp; 득점률 = 영역 득점 ÷ 배점 · 인식차 = 자기평가 득점률 − 평가자 평균 득점률<span class="pgno">${pno} / ${ptot}</span></div></div>
+  <div class="foot"><div class="fn">※ ${P.isExec
+      ? "임원 평가는 1·2·3차 다단계 평가로, <b>가감점(근태·안전·교육)을 반영하지 않습니다</b>. 최종 평균 = 각 차수 점수의 평균"
+      : "최종 평균 = 원평균 + 가감점(근태·안전·교육)"} · 등급은 ${esc(P.poolName)} 내 상대평가 기준 &nbsp;|&nbsp; 득점률 = 영역 득점 ÷ 배점 · 인식차 = 자기평가 득점률 − 평가자 평균 득점률<span class="pgno">${pno} / ${ptot}</span></div></div>
 </section>`;
 }
 
