@@ -666,49 +666,49 @@ function setAdminPassword(newPw) {
 // 부서별 평가자 정보 (비밀번호는 관리자 페이지에서 관리)
 const DEFAULT_EVALUATORS = {
   "수배전영업부": {
-    "1차": { name: "양정인", title: "차장", password: "WAJHZX" },
-    "2차": { name: "임웅걸", title: "부사장", password: "6CPAGS" }
+    "1차": { name: "양정인", title: "차장", password: "" },
+    "2차": { name: "임웅걸", title: "부사장", password: "" }
   },
   "수배전설계부": {
-    "1차": { name: "정언",   title: "팀장",   password: "AGWTHU" },
-    "2차": { name: "노영훈", title: "이사",   password: "3A3YLE" }
+    "1차": { name: "정언",   title: "팀장",   password: "" },
+    "2차": { name: "노영훈", title: "이사",   password: "" }
   },
   "생산관리부": {
-    "1차": { name: "김대위", title: "차장", password: "8LCD5V" },
-    "2차": { name: "양정민", title: "부장", password: "3ZT9NT" }
+    "1차": { name: "김대위", title: "차장", password: "" },
+    "2차": { name: "양정민", title: "부장", password: "" }
   },
   "품질보증부": {
-    "1차": { name: "유창근", title: "부장", password: "4V5UYB" },
-    "2차": { name: "이병수", title: "이사", password: "HKCHDJ" }
+    "1차": { name: "유창근", title: "부장", password: "" },
+    "2차": { name: "이병수", title: "이사", password: "" }
   },
   "자재관리부": {
-    "1차": { name: "전기훈", title: "부장", password: "WMMGJ7" }
+    "1차": { name: "전기훈", title: "부장", password: "" }
   },
   "신사업부": {
-    "1차": { name: "김계수", title: "상무", password: "WVFZFN" }
+    "1차": { name: "김계수", title: "상무", password: "" }
   },
   "신재생에너지영업부": {
-    "1차": { name: "송지훈", title: "부장", password: "9WTX42" },
-    "2차": { name: "최재웅", title: "상무", password: "HBLJG8" }
+    "1차": { name: "송지훈", title: "부장", password: "" },
+    "2차": { name: "최재웅", title: "상무", password: "" }
   },
   "부설연구소": {
-    "1차": { name: "조민웅", title: "부장", password: "6LWN7Q" },
-    "2차": { name: "정택기", title: "부장", password: "JHTJU6" }
+    "1차": { name: "조민웅", title: "부장", password: "" },
+    "2차": { name: "정택기", title: "부장", password: "" }
   },
   "경영지원부": {
-    "1차": { name: "강유석", title: "부장", password: "01067952455" },
-    "2차": { name: "김소윤", title: "상무", password: "DW3PCN" }
+    "1차": { name: "강유석", title: "부장", password: "" },
+    "2차": { name: "김소윤", title: "상무", password: "" }
   },
   // 임원(3차·4차) — 부서 선택 시 "임원" 으로 표시
   "임원": {
-    "3차-조규오": { name: "조규오", title: "부사장",   password: "KR3DQN" }, // 경영지원부 강유석 · 신재생 송지훈
-    "3차-이석원": { name: "이석원", title: "전무",     password: "hyele0927!" }, // 부설연구소 조민웅·정택기
-    "3차-임웅걸": { name: "임웅걸", title: "부사장",   password: "IW5FHS" }, // 나머지 부장·이사
-    "4차":        { name: "양정일", title: "대표이사", password: "YJ9PTM" }  // 부장·이사 전체
+    "3차-조규오": { name: "조규오", title: "부사장",   password: "" }, // 경영지원부 강유석 · 신재생 송지훈
+    "3차-이석원": { name: "이석원", title: "전무",     password: "" }, // 부설연구소 조민웅·정택기
+    "3차-임웅걸": { name: "임웅걸", title: "부사장",   password: "" }, // 나머지 부장·이사
+    "4차":        { name: "양정일", title: "대표이사", password: "" }  // 부장·이사 전체
   },
   // 인사/안전/교육 담당자 (근태·안전·교육 가감점 입력) — 로그인하면 가감점 관리 화면으로 진입
   "인사/안전/교육": {
-    "담당": { name: "강유석", title: "부장", password: "01067952455" }
+    "담당": { name: "강유석", title: "부장", password: "" }
   }
 };
 
@@ -1392,7 +1392,19 @@ function saveStore(key, data) {
  *       Content-Type 을 text/plain 으로 설정합니다.
  *       Apps Script 는 e.postData.contents 로 원문을 그대로 받습니다.
  */
-async function remoteGet() {
+/* 로그인 토큰 — 서버가 발급. 비밀번호는 브라우저에 보관하지 않는다. */
+const AUTH_TOKEN_KEY = "hy_token_v1";
+let AUTH_TOKEN = "";
+try { AUTH_TOKEN = localStorage.getItem(AUTH_TOKEN_KEY) || ""; } catch (e) {}
+function setAuthToken(t) {
+  AUTH_TOKEN = t || "";
+  try { t ? localStorage.setItem(AUTH_TOKEN_KEY, t) : localStorage.removeItem(AUTH_TOKEN_KEY); } catch (e) {}
+}
+function isAuthError(msg) { return String(msg || "").indexOf("AUTH_REQUIRED") >= 0; }
+function isUnknownAction(msg) { return String(msg || "").indexOf("unknown action") >= 0; }
+
+// 구버전 백엔드 호환용 (신버전에서는 데이터가 내려오지 않음)
+async function remoteGetLegacy() {
   const url = BACKEND_URL + (BACKEND_URL.includes("?") ? "&" : "?") + "t=" + Date.now();
   const res = await fetch(url, { method: "GET" });
   if (!res.ok) throw new Error("GET " + res.status);
@@ -1400,16 +1412,33 @@ async function remoteGet() {
   if (!data.ok) throw new Error(data.error || "server error");
   return data;
 }
-async function remotePost(action, payload) {
+// 모든 POST 에 토큰 동봉
+async function remotePostRaw(action, payload, noToken) {
+  const body = { action, payload };
+  if (!noToken && AUTH_TOKEN) body.token = AUTH_TOKEN;
   const res = await fetch(BACKEND_URL, {
     method: "POST",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify({ action, payload })
+    body: JSON.stringify(body)
   });
   if (!res.ok) throw new Error("POST " + res.status);
-  const data = await res.json();
+  return await res.json();
+}
+async function remotePost(action, payload) {
+  const data = await remotePostRaw(action, payload);
   if (!data.ok) throw new Error(data.error || "server error");
   return data;
+}
+// 데이터 로드: 신버전(load) 우선, 구버전이면 GET 으로 폴백
+async function remoteGet() {
+  if (AUTH_TOKEN) {
+    try { return await remotePost("load", {}); }
+    catch (e) {
+      if (isAuthError(e.message)) { setAuthToken(""); throw e; }
+      if (!isUnknownAction(e.message)) throw e;   // 신버전인데 다른 오류
+    }
+  }
+  return await remoteGetLegacy();
 }
 
 /* ---- 초기 로딩 (앱 시작 시 1회, 새로고침 시 재호출) ---- */
@@ -1867,11 +1896,45 @@ function hasSubmittedSelfEval(dept, name, period) {
 //  · 평가자 계정이 있으면 평가자 비밀번호 우선
 //  · 없으면 직원 개인 비밀번호(pw)
 //  · 수습자는 로그인 차단
-function authenticateUser(name, pw) {
+// 서버 로그인 (신버전). 구버전 백엔드면 null 을 돌려주고 기존 방식으로 넘어간다.
+async function serverLogin(name, pw) {
+  if (!IS_REMOTE()) return null;
+  let r;
+  try { r = await remotePostRaw("login", { name, pw }, true); }
+  catch (e) { return { ok: false, err: "서버에 연결하지 못했습니다. 네트워크를 확인해 주세요." }; }
+  if (r && r.ok) { setAuthToken(r.token || ""); return r; }
+  if (r && isUnknownAction(r.error)) return null;         // 구버전 백엔드
+  return { ok: false, err: (r && r.error) || "로그인에 실패했습니다." };
+}
+
+async function authenticateUser(name, pw) {
   const raw = String(name || "").trim();
   const pwStr = String(pw || "").trim();
   if (!raw) return { ok: false, err: "이름을 입력해 주세요." };
   if (!pwStr) return { ok: false, err: "비밀번호를 입력해 주세요." };
+
+  // ── 신버전: 서버에서 비밀번호 대조 → 토큰 발급 → 데이터 로드 ──
+  const sv = await serverLogin(raw, pwStr);
+  if (sv) {
+    if (!sv.ok) return { ok: false, err: sv.err };
+    try { await initData(); } catch (e) { return { ok: false, err: "데이터를 불러오지 못했습니다. 다시 시도해 주세요." }; }
+    const evs0 = getEvaluators();
+    const roles0 = [];
+    Object.entries(evs0).forEach(([dept, rounds]) => {
+      Object.entries(rounds).forEach(([round, info]) => {
+        if (info && info.name === raw) roles0.push({ dept, round, info });
+      });
+    });
+    const emp0 = EMPLOYEES.find(e => e.name === raw) || null;
+    const period0 = getActivePeriod() || resolveEvalPeriod();
+    if (emp0 && isProbationExempt(emp0, period0) && !roles0.length) {
+      setAuthToken("");
+      return { ok: false, err: "수습 기간 중에는 시스템을 이용할 수 없습니다. 인사팀에 문의해 주세요." };
+    }
+    return { ok: true, emp: emp0, roles: roles0, mustChangePw: !!sv.mustChangePw };
+  }
+
+  // ── 구버전 백엔드 호환 경로 (비밀번호가 내려오는 경우) ──
 
   const evs = getEvaluators();
   const roles = [];
@@ -1909,6 +1972,7 @@ function isAdminUser() {
   return !!(session.userName && ADMIN_NAMES.has(session.userName));
 }
 function logoutUser() {
+  setAuthToken("");
   session.userName = null;
   session.userDept = null;
   session.userRank = null;
@@ -2112,11 +2176,15 @@ function renderUnifiedLogin() {
   }));
 }
 
-function tryUnifiedLogin() {
+async function tryUnifiedLogin() {
   const name = document.getElementById("uni-name").value;
   const pw = document.getElementById("uni-pw").value;
   const errEl = document.getElementById("login-err");
-  const res = authenticateUser(name, pw);
+  const btn = document.querySelector('button[onclick="tryUnifiedLogin()"]');
+  if (btn) { btn.disabled = true; btn.textContent = "확인 중…"; }
+  let res;
+  try { res = await authenticateUser(name, pw); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = "로그인"; } }
   if (!res.ok) {
     errEl.innerHTML = `<div class="notice err">${esc(res.err)}</div>`;
     return;
@@ -2719,16 +2787,33 @@ async function submitEvalChangePw() {
   const emp = getCurrentEmployee();
   if (!myRoles.length && !emp) return showErr("계정 정보를 찾을 수 없습니다. 다시 로그인해 주세요.");
   if (!cur) return showErr("현재 비밀번호를 입력해 주세요.");
-  // 현재 비밀번호 검증 (평가자 계정 우선)
-  const curOk = myRoles.length
-    ? myRoles.some(r => pwMatches(cur, r.info.password))
-    : pwMatches(cur, emp.pw);
-  if (!curOk) return showErr("현재 비밀번호가 일치하지 않습니다.");
   if (!np1 || np1.length < 4) return showErr("새 비밀번호는 4자 이상이어야 합니다.");
   if (np1 !== np2) return showErr("새 비밀번호 확인이 일치하지 않습니다.");
   if (np1 === cur) return showErr("현재 비밀번호와 동일합니다. 다른 비밀번호를 입력해 주세요.");
   const btn = document.querySelector('button[onclick="submitEvalChangePw()"]');
   if (btn) { btn.disabled = true; btn.textContent = "저장 중…"; }
+  // ── 신버전: 서버가 현재 비밀번호를 대조하고 변경까지 처리 ──
+  if (IS_REMOTE()) {
+    let r = null;
+    try { r = await remotePostRaw("changePw", { name: session.userName, curPw: cur, newPw: np1 }); }
+    catch (e) { r = null; }
+    if (r && r.ok) {
+      session.mustChangePw = false; saveSession();
+      err.innerHTML = `<div class="notice info" style="background:#dcfce7;color:#166534;border:1px solid #86efac">✅ 비밀번호가 변경되었습니다. 다음 로그인부터 새 비밀번호를 사용해 주세요.</div>`;
+      setTimeout(() => { go("home"); }, 1500);
+      return;
+    }
+    if (r && !isUnknownAction(r.error)) {
+      if (btn) { btn.disabled = false; btn.textContent = "비밀번호 변경"; }
+      return showErr(r.error || "비밀번호 변경에 실패했습니다.");
+    }
+    // r === null 또는 unknown action → 구버전 백엔드, 아래 기존 방식으로 진행
+  }
+  // ── 구버전 호환: 화면에서 현재 비밀번호 대조 ──
+  const curOk = myRoles.length
+    ? myRoles.some(r => pwMatches(cur, r.info.password))
+    : pwMatches(cur, emp.pw);
+  if (!curOk) { if (btn) { btn.disabled = false; btn.textContent = "비밀번호 변경"; } return showErr("현재 비밀번호가 일치하지 않습니다."); }
   try {
     if (myRoles.length) {
       // 평가자 계정: 본인 이름으로 등록된 모든 (부서, 차수) 비밀번호를 함께 변경
@@ -5542,10 +5627,10 @@ function renderAdminAccounts(body) {
     });
   });
   body.innerHTML = `
-    <div class="notice info">평가자 비밀번호는 아래 표에서 확인 · 재발급 · CSV 내보내기가 가능합니다. 평가자가 로그인하지 못한 경우 재발급 후 새 비밀번호를 안내해 주세요.</div>
+    <div class="notice warn" style="line-height:1.7">🔒 <b>보안 정책 변경</b> — 저장된 비밀번호는 서버에서 내려오지 않으므로 <b>조회할 수 없습니다.</b>
+      평가자가 로그인하지 못하면 <b>재발급</b> 또는 <b>직접 설정</b>으로 새 비밀번호를 정한 뒤 본인에게 안내해 주세요. (설정한 값은 그 자리에서 1회만 표시됩니다)</div>
     <div class="flex" style="margin-bottom:10px">
-      <button class="small" onclick="toggleAllPw()">전체 비밀번호 보기/숨기기</button>
-      <button class="small secondary" onclick="exportAccountsCsv()">CSV 내보내기</button>
+      <button class="small secondary" onclick="exportAccountsCsv()">계정 목록 CSV (비밀번호 제외)</button>
     </div>
     <div style="overflow-x:auto">
     <table>
@@ -5563,7 +5648,7 @@ function renderAdminAccounts(body) {
             <td>${esc(roundLabel)}</td>
             <td>${esc(r.name)}</td>
             <td>${esc(r.title)}</td>
-            <td><span class="pw-view" id="pw-${i}" data-dept="${esc(r.dept)}" data-round="${esc(r.round)}" data-val="${esc(r.password)}">${esc(r.password)}</span></td>
+            <td><span class="mini muted" title="보안상 비밀번호는 조회할 수 없습니다">${(r.password != null && String(r.password).length) || r.hasPw ? "●●●●●●" : "<span style='color:#dc2626'>미설정</span>"}</span></td>
             <td>
               <button class="small" onclick="regenPw('${esc(r.dept)}','${esc(r.round)}')">비밀번호 재발급</button>
               <button class="small secondary" onclick="setPwManual('${esc(r.dept)}','${esc(r.round)}')">비밀번호 직접 설정</button>
@@ -5626,18 +5711,18 @@ async function setPwManual(dept, round) {
 
 function exportAccountsCsv() {
   const evs = getEvaluators();
-  const rows = [["부서","차수","평가자","직위","비밀번호"]];
+  const rows = [["부서","차수","평가자","직위"]];   // 비밀번호는 보안상 제외
   const roundOrder = ["1차","2차","3차-조규오","3차-임웅걸","3차-이석원","4차"];
   Object.entries(evs).forEach(([dept, info]) => {
     roundOrder.forEach(r => {
       if (info[r]) {
         const label = r.startsWith("3차-") ? `1차 (${r.slice(3)})` : (r === "4차" ? "2차" : r);
-        rows.push([dept, label, info[r].name, info[r].title, info[r].password]);
+        rows.push([dept, label, info[r].name, info[r].title]);
       }
     });
     Object.keys(info).forEach(r => {
       if (!roundOrder.includes(r)) {
-        rows.push([dept, r, info[r].name, info[r].title, info[r].password]);
+        rows.push([dept, r, info[r].name, info[r].title]);
       }
     });
   });
