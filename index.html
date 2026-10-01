@@ -6957,6 +6957,7 @@ function buildReportHtml(opts) {
       <tr><td></td><td></td><td></td><td></td></tr></table>
   </div>
 </section>`);
+    pages.push(rptFormPage(period, pLabel));
     summary.forEach((grp, i) => {
       pages.push(`
 <section class="page">
@@ -6973,6 +6974,60 @@ function buildReportHtml(opts) {
   }
   targets.forEach((p, i) => pages.push(rptPersonPage(p, nSummary + i + 1, TOT, dist)));
   return { html: pages.join(""), count: pages.length, persons: targets.length };
+}
+
+/* ---- 평가표 양식 샘플 페이지 (표지 다음 1장, A4 가로) ---- */
+function rptFormTable(form, tag) {
+  const areas = (form && form.areas) || [];
+  let rows = "";
+  areas.forEach(a => {
+    const items = a.items || [];
+    const n = items.reduce((x, i) => x + ((i.subItems || []).length || 1), 0);
+    const label = esc(String(a.area || "").split("(")[0].trim()).replace(/\s+/, "<br>");
+    let first = true;
+    items.forEach(it => {
+      const subs = (it.subItems && it.subItems.length)
+        ? it.subItems
+        : [{ name: it.name, points: (it.scores && it.scores[0]) || 0 }];
+      subs.forEach((sb, si) => {
+        rows += "<tr>";
+        if (first) { rows += `<td class="fm-area" rowspan="${n}">${label}</td>`; first = false; }
+        if (si === 0) rows += `<td class="fm-item" rowspan="${subs.length}">${esc(it.name)}</td>`;
+        rows += `<td class="fm-sub">${esc(sb.name)}</td><td class="fm-pt">${sb.points}</td>`
+             +  `<td></td><td></td><td></td><td></td><td></td></tr>`;
+      });
+    });
+  });
+  let tot = 0;
+  const parts = areas.map(a => {
+    let t = 0;
+    (a.items || []).forEach(i => ((i.subItems || [])).forEach(sb => { t += Number(sb.points) || 0; }));
+    tot += t;
+    const nm = String(a.area || "").split("(")[0].trim()
+      .replace(" 영역", "").replace("행동·리더십", "행동").replace("행동·태도", "행동");
+    return esc(nm) + " " + t;
+  }).join(" · ");
+  return `<div class="fm-col">
+  <div class="fm-ct"><span>${esc((form && form.title) || "")}</span><small>${esc(tag)} · ${tot}점 만점</small></div>
+  <table class="fm-tb"><thead><tr>
+    <th style="width:8.5%">영역</th><th style="width:17%">평가항목</th><th style="width:57.5%">세부 평가 문항</th>
+    <th style="width:3%">배점</th>
+    <th style="width:2.8%">A</th><th style="width:2.8%">B</th><th style="width:2.8%">C</th><th style="width:2.8%">D</th><th style="width:2.8%">E</th>
+  </tr></thead><tbody>${rows}</tbody>
+  <tfoot><tr><td colspan="3">합계 &nbsp;· &nbsp;${parts}</td><td>${tot}</td><td colspan="5"></td></tr></tfoot></table>
+</div>`;
+}
+function rptFormPage(period, pLabel) {
+  const fm = getFormForGroup(period, "manager");
+  const fs = getFormForGroup(period, "staff");
+  return `
+<section class="page formpg">
+  <div class="ph2"><div class="ph-l"><span class="co">한양전공(주)</span><h2>${esc(pLabel)} 인사평가 — 평가표 양식</h2></div>
+    <span class="cf">대외비</span></div>
+  <p class="fm-lead">※ 직급군별 평가표. 각 세부 문항을 A~E 5단계로 평정하며 환산율은 A 100% · B 80% · C 60% · D 40% · E 20%, 합계 100점 만점입니다.</p>
+  <div class="fm-cols">${rptFormTable(fm, "과장 이상")}${rptFormTable(fs, "대리 이하")}</div>
+  <div class="pf"><span>평가표 양식</span><span>한양전공(주) 인사평가 결과 보고서</span></div>
+</section>`;
 }
 
 /* ---- 보고서 전용 CSS ---- */
@@ -7116,6 +7171,22 @@ table.ax-t th{background:#eef2ff;color:var(--pri2);font-size:10px;font-weight:70
 .fn{font-size:8px;color:var(--muted);line-height:1.7;position:relative}
 .pgno{position:absolute;right:0;top:0;font-weight:700}
 .pf{margin-top:auto;border-top:1px solid var(--bd);padding-top:4px;display:flex;justify-content:space-between;font-size:9.5px;color:var(--muted)}
+/* 평가표 양식 샘플 페이지 */
+.page.formpg{padding:6mm 7mm 4mm}
+.formpg .ph2{padding-bottom:3px;margin-bottom:3px}
+.fm-lead{font-size:8.5px;color:var(--muted);margin:0 0 3px;flex:0 0 auto}
+.fm-cols{flex:1;display:grid;grid-template-columns:1fr 1fr;gap:4mm;min-height:0}
+.fm-col{display:flex;flex-direction:column;min-height:0}
+.fm-ct{font-size:10.5px;font-weight:800;color:#fff;background:var(--pri);padding:3px 7px;border-radius:3px 3px 0 0;display:flex;justify-content:space-between;align-items:center}
+.fm-ct small{font-weight:700;font-size:8.5px;opacity:.92}
+table.fm-tb{width:100%;border-collapse:collapse;table-layout:fixed}
+table.fm-tb th,table.fm-tb td{border:.5px solid var(--bd);padding:4.8px 3px;line-height:1.25;vertical-align:middle;word-break:keep-all}
+table.fm-tb thead th{background:#e8eef7;color:#1e293b;font-weight:800;font-size:8px;text-align:center;padding:3px 2px}
+table.fm-tb td.fm-area{background:#f6f9ff;font-weight:800;color:var(--pri);text-align:center;font-size:8.4px;letter-spacing:-.05em;line-height:1.35;padding:2px 1px;white-space:nowrap}
+table.fm-tb td.fm-item{background:#fcfdff;font-weight:700;color:#1f2937;text-align:center;font-size:8.6px;letter-spacing:-.05em;line-height:1.2;padding:2px 2px;white-space:nowrap}
+table.fm-tb td.fm-sub{font-size:10px;color:#111827;letter-spacing:-.045em;padding-left:5px;white-space:nowrap}
+table.fm-tb td.fm-pt{text-align:center;font-weight:800;color:var(--pri);font-size:9.5px;padding:2px 1px}
+table.fm-tb tfoot td{background:#eef2f7;font-weight:800;color:#111827;text-align:center;font-size:8.4px;padding:2.6px 3px;white-space:nowrap}
 @media print{
   @page{size:A4 landscape;margin:0}
   body{background:#fff}.rptbar{display:none}.sheet{padding:0;gap:0}
@@ -7167,10 +7238,37 @@ function fitSelfText(){
     while(el.scrollHeight>el.clientHeight+1 && fs>7.4){ fs-=0.4; el.style.fontSize=fs+'px'; el.style.lineHeight='1.5'; }
   });
 }
-if(document.readyState==='complete') fitSelfText();
-else window.addEventListener('load', fitSelfText);
-document.addEventListener('DOMContentLoaded', fitSelfText);
-window.addEventListener('beforeprint', fitSelfText);
+// 평가표 양식 페이지: 글꼴 환경이 달라도 한 줄 유지 + 1장 수납 보장
+function fitFormPage(){
+  var pages = document.querySelectorAll('.page.formpg');
+  for (var p = 0; p < pages.length; p++) {
+    var pg = pages[p];
+    ['fm-sub','fm-item','fm-area'].forEach(function(cls){
+      var els = [].slice.call(pg.querySelectorAll('td.' + cls));
+      if (!els.length) return;
+      var fs = parseFloat(window.getComputedStyle(els[0]).fontSize) || 10;
+      var g = 0;
+      var over = function(){ for (var i=0;i<els.length;i++){ if (els[i].scrollWidth > els[i].clientWidth + 0.5) return true; } return false; };
+      while (g++ < 40 && fs > 5.5 && over()) {
+        fs -= 0.2;
+        for (var i=0;i<els.length;i++) els[i].style.fontSize = fs + 'px';
+      }
+    });
+    var cells = [].slice.call(pg.querySelectorAll('table.fm-tb td,table.fm-tb th')).filter(function(c){
+      return !(c.classList.contains('fm-area') || c.classList.contains('fm-item') || c.classList.contains('fm-pt'));
+    });
+    var pad = 4.8, g2 = 0;
+    while (g2++ < 24 && pg.scrollHeight > pg.clientHeight + 1 && pad > 1) {
+      pad -= 0.3;
+      for (var j=0;j<cells.length;j++){ cells[j].style.paddingTop = pad + 'px'; cells[j].style.paddingBottom = pad + 'px'; }
+    }
+  }
+}
+function fitAll(){ fitSelfText(); fitFormPage(); }
+if(document.readyState==='complete') fitAll();
+else window.addEventListener('load', fitAll);
+document.addEventListener('DOMContentLoaded', fitAll);
+window.addEventListener('beforeprint', fitAll);
 `;
 
 /* ---- 새 창으로 열기 ---- */
