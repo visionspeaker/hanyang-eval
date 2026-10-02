@@ -858,6 +858,132 @@ function isProbationExempt(emp, period) {
   return getProbationExemptPeriods(emp).includes(period);
 }
 
+/* ===== 수습평가 (신규 입사자 · 수시) =====
+ *  employees.notes 에 아래 한 줄로 등록한다.
+ *    수습평가:입사일=2026-08-03;만료일=2026-11-02;1차=김영훈|과장;2차=유창근|부장
+ *  1차·2차 평가자는 부서 기본 평가자와 무관하게 개인별로 수동 지정한다.
+ */
+const PROB_R1 = "수습1차";
+const PROB_R2 = "수습2차";
+const PROB_ROUNDS = [PROB_R1, PROB_R2];
+const PROB_DUE_DAYS = 7;                       // 수습 만료 7일 전까지 평가 완료
+const PROB_VERDICTS = ["적합", "조건부(수습 연장)", "부적합"];
+const PROB_BANDS = [["적합", 80], ["조건부(수습 연장)", 70]];   // 그 외 부적합
+function isProbationRound(r) { return r === PROB_R1 || r === PROB_R2; }
+function probRoundLabel(r) { return r === PROB_R1 ? "1차 (직속 상급자)" : r === PROB_R2 ? "2차 (부서장)" : r; }
+function probVerdictOf(score) {
+  const v = Number(score);
+  if (score === null || score === "" || isNaN(v)) return "";
+  for (let i = 0; i < PROB_BANDS.length; i++) if (v >= PROB_BANDS[i][1]) return PROB_BANDS[i][0];
+  return "부적합";
+}
+function probVerdictColor(v) {
+  if (v === "적합") return "#059669";
+  if (v === "부적합") return "#dc2626";
+  if (v) return "#d97706";
+  return "#94a3b8";
+}
+function probParseDate(v) {
+  const t = String(v || "").trim().replace(/\./g, "-").replace(/-+$/, "").replace(/\s/g, "");
+  if (!/^\d{4}-\d{1,2}-\d{1,2}$/.test(t)) return null;
+  const [y, m, d] = t.split("-").map(Number);
+  const dt = new Date(y, m - 1, d);
+  return isNaN(dt.getTime()) ? null : dt;
+}
+function probFmtDate(v) {
+  const d = probParseDate(v);
+  if (!d) return String(v || "");
+  return `${d.getFullYear()}. ${d.getMonth() + 1}. ${d.getDate()}.`;
+}
+function probDueDate(endAt) {
+  const d = probParseDate(endAt);
+  if (!d) return "";
+  d.setDate(d.getDate() - PROB_DUE_DAYS);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function probDaysLeft(dueAt) {
+  const d = probParseDate(dueAt);
+  if (!d) return null;
+  const t = new Date(); t.setHours(0, 0, 0, 0);
+  return Math.round((d - t) / 86400000);
+}
+function getProbationInfo(emp) {
+  const notes = String((emp && emp.notes) || "");
+  const m = notes.match(/수습평가:([^\n\r]+)/);
+  if (!m) return null;
+  const o = { joinedAt: "", endAt: "", r1: null, r2: null };
+  m[1].split(";").forEach(seg => {
+    const i = seg.indexOf("=");
+    if (i < 0) return;
+    const k = seg.slice(0, i).trim(), v = seg.slice(i + 1).trim();
+    if (k === "입사일") o.joinedAt = v;
+    else if (k === "만료일") o.endAt = v;
+    else if (k === "1차" || k === "2차") {
+      const parts = v.split("|");
+      o[k === "1차" ? "r1" : "r2"] = { name: (parts[0] || "").trim(), title: (parts[1] || "").trim() };
+    }
+  });
+  o.dueAt = probDueDate(o.endAt);
+  return o;
+}
+function probInfoToStr(info) {
+  const p = [];
+  if (info.joinedAt) p.push("입사일=" + info.joinedAt);
+  if (info.endAt)    p.push("만료일=" + info.endAt);
+  if (info.r1 && info.r1.name) p.push("1차=" + info.r1.name + "|" + (info.r1.title || ""));
+  if (info.r2 && info.r2.name) p.push("2차=" + info.r2.name + "|" + (info.r2.title || ""));
+  return "수습평가:" + p.join(";");
+}
+function withProbationNotes(notes, info) {
+  const base = String(notes || "").split(/\r?\n/).filter(l => !/^\s*수습평가:/.test(l));
+  if (info) base.push(probInfoToStr(info));
+  return base.filter(l => l.trim()).join("\n");
+}
+function getProbationTargets() {
+  return EMPLOYEES.map(e => ({ emp: e, info: getProbationInfo(e) }))
+    .filter(x => !!x.info)
+    .sort((a, b) => String(a.info.endAt).localeCompare(String(b.info.endAt)));
+}
+function probRoundsFor(name) {
+  const n = String(name || "").trim();
+  const out = [];
+  if (!n) return out;
+  getProbationTargets().forEach(t => {
+    if (t.info.r1 && t.info.r1.name === n) out.push({ round: PROB_R1, emp: t.emp, info: t.info });
+    if (t.info.r2 && t.info.r2.name === n) out.push({ round: PROB_R2, emp: t.emp, info: t.info });
+  });
+  return out;
+}
+function hasProbationRole(name) { return probRoundsFor(name).length > 0; }
+// 평가 레코드에서 전환 의견 꺼내기 (scores 안의 __ 키에 보관)
+function probVerdictFrom(ev) {
+  if (!ev || !ev.scores) return { verdict: "", reason: "" };
+  return { verdict: ev.scores.__verdict || "", reason: ev.scores.__verdictReason || "" };
+}
+function probFindEval(emp, round, period) {
+  return getEvaluations().find(x => x.dept === emp.dept && x.empName === emp.name
+    && x.round === round && (!period || x.period === period));
+}
+// 대상자 1명의 집계 (1·2차 평균 → 최종 전환 판정)
+function probSummary(emp, period) {
+  const e1 = probFindEval(emp, PROB_R1, period);
+  const e2 = probFindEval(emp, PROB_R2, period);
+  const s1 = isEvalSubmitted(e1) ? e1.total : null;
+  const s2 = isEvalSubmitted(e2) ? e2.total : null;
+  let avg = null;
+  if (s1 !== null && s2 !== null) avg = Math.round((s1 + s2) / 2 * 10) / 10;
+  else if (s1 !== null) avg = s1;
+  else if (s2 !== null) avg = s2;
+  return {
+    e1, e2, s1, s2, avg,
+    draft1: !!e1 && !isEvalSubmitted(e1),
+    draft2: !!e2 && !isEvalSubmitted(e2),
+    v1: probVerdictFrom(e1), v2: probVerdictFrom(e2),
+    done: s1 !== null && s2 !== null,
+    finalVerdict: (s1 !== null && s2 !== null) ? probVerdictOf(avg) : ""
+  };
+}
+
 // 개인별 평가자 오버라이드 (부서 기본 평가자 대신 특정 사람이 평가)
 //   notes 형식: "평가자오버라이드:1차=이름|직급;2차=이름|직급"
 //   각 라운드는 선택적. 해당 라운드가 없으면 부서 기본 평가자가 그대로 평가.
@@ -1091,8 +1217,184 @@ const FORM_STAFF = {
 };
 
 // 그룹 키 ↔ 기본 폼 매핑 (관리자가 커스텀 그룹 추가 시 서버 스키마로 override)
-const DEFAULT_FORMS = { manager: FORM_MANAGER, staff: FORM_STAFF };
-const DEFAULT_GROUP_LABELS = { manager: "관리자용 (과장이상)", staff: "대리이하용" };
+// 수습기간 평가표 (신규 입사자 · 10항목 20문항 · 전 문항 5점 · 100점)
+const FORM_PROBATION = {
+  "title": "수습기간 평가표 (신규 입사자)",
+  "gradeRatios": [
+    1.0,
+    0.8,
+    0.6,
+    0.4,
+    0.2
+  ],
+  "areas": [
+    {
+      "area": "업무 습득 및 수행(40점)",
+      "items": [
+        {
+          "id": "pr1",
+          "name": "업무 이해",
+          "subItems": [
+            {
+              "name": "담당 업무의 목적과 기본 처리 절차를 이해하고 있는가?",
+              "points": 5
+            },
+            {
+              "name": "사내 시스템과 문서 양식 사용법을 익히고 있는가?",
+              "points": 5
+            }
+          ]
+        },
+        {
+          "id": "pr2",
+          "name": "습득 속도",
+          "subItems": [
+            {
+              "name": "새로운 업무를 배우는 속도가 적정한가?",
+              "points": 5
+            },
+            {
+              "name": "교육·인수인계 받은 내용을 반복 설명 없이 수행하는가?",
+              "points": 5
+            }
+          ]
+        },
+        {
+          "id": "pr3",
+          "name": "지시 이행",
+          "subItems": [
+            {
+              "name": "지시 내용을 정확히 이해하고 수행하는가?",
+              "points": 5
+            },
+            {
+              "name": "주어진 기한을 지키는가?",
+              "points": 5
+            }
+          ]
+        },
+        {
+          "id": "pr4",
+          "name": "실수 개선",
+          "subItems": [
+            {
+              "name": "같은 실수를 반복하지 않는가?",
+              "points": 5
+            },
+            {
+              "name": "실수를 숨기지 않고 알린 뒤 바로잡으려 하는가?",
+              "points": 5
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "area": "학습 및 보고 태도(30점)",
+      "items": [
+        {
+          "id": "pr5",
+          "name": "적극성",
+          "subItems": [
+            {
+              "name": "모르는 것을 스스로 찾아보거나 먼저 질문하는가?",
+              "points": 5
+            },
+            {
+              "name": "새로운 업무와 교육에 적극적으로 참여하는가?",
+              "points": 5
+            }
+          ]
+        },
+        {
+          "id": "pr6",
+          "name": "피드백 수용",
+          "subItems": [
+            {
+              "name": "지적·피드백을 열린 자세로 받아들이는가?",
+              "points": 5
+            },
+            {
+              "name": "피드백 받은 내용을 실제 행동으로 고치는가?",
+              "points": 5
+            }
+          ]
+        },
+        {
+          "id": "pr7",
+          "name": "보고·연락",
+          "subItems": [
+            {
+              "name": "업무 진행 상황을 상급자에게 제때 보고하는가?",
+              "points": 5
+            },
+            {
+              "name": "문제나 어려움이 생기면 즉시 알리고 도움을 요청하는가?",
+              "points": 5
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "area": "근무 태도 및 조직 적응(30점)",
+      "items": [
+        {
+          "id": "pr8",
+          "name": "근태·성실",
+          "subItems": [
+            {
+              "name": "지각·조퇴·무단결근 없이 근무하는가?",
+              "points": 5
+            },
+            {
+              "name": "맡은 일을 끝까지 책임지고 수행하는가?",
+              "points": 5
+            }
+          ]
+        },
+        {
+          "id": "pr9",
+          "name": "소통·협조",
+          "subItems": [
+            {
+              "name": "동료·상급자와 원활하게 소통하는가?",
+              "points": 5
+            },
+            {
+              "name": "팀 업무에 협조적인가?",
+              "points": 5
+            }
+          ]
+        },
+        {
+          "id": "pr10",
+          "name": "규정·안전",
+          "subItems": [
+            {
+              "name": "회사 규정과 직장 예절을 준수하는가?",
+              "points": 5
+            },
+            {
+              "name": "안전수칙과 작업장 정리정돈을 지키는가?",
+              "points": 5
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "grades": [
+    "매우우수",
+    "우수",
+    "보통",
+    "미흡",
+    "매우미흡"
+  ]
+};
+
+const DEFAULT_FORMS = { manager: FORM_MANAGER, staff: FORM_STAFF, probation: FORM_PROBATION };
+const DEFAULT_GROUP_LABELS = { manager: "관리자용 (과장이상)", staff: "대리이하용", probation: "수습평가용 (신규 입사자)" };
 function groupKeyForEmp(emp) {
   if (!emp) return "staff";
   if (emp.groupKey) return emp.groupKey;
@@ -1114,6 +1416,11 @@ function getFormForGroup(period, groupKey) {
   return DEFAULT_FORMS[groupKey] || FORM_STAFF;
 }
 function getFormForEmp(period, emp) { return getFormForGroup(period, groupKeyForEmp(emp)); }
+// 라운드까지 고려한 폼 선택 (수습평가는 직급과 무관하게 수습 평가표)
+function getFormForContext(period, emp, round) {
+  if (isProbationRound(round)) return getFormForGroup(period, "probation");
+  return getFormForEmp(period, emp);
+}
 // 사용 가능한 모든 그룹 (기본 2개 + 서버 커스텀 그룹)
 function getAllGroups(period) {
   const set = new Map();
@@ -2130,6 +2437,7 @@ function render() {
   if (v === "eval-picker") return renderEvalPicker();
   if (v === "eval-changepw") return renderEvalChangePw();
   if (v === "self-eval") return renderSelfEvalForm();
+  if (v === "prob-list") return renderProbList();
   if (v === "force-changepw") return renderForceChangePw();
   renderHome();
 }
@@ -2225,6 +2533,7 @@ function renderUserHome() {
   const showSelf = canSelfEvaluate(emp, period);
   const showEval = roles.length > 0;
   const showAdmin = isAdminUser();
+  const showProb = hasProbationRole(session.userName);
   const selfDone = showSelf && hasSubmittedSelfEval(emp.dept, emp.name, period);
   const windowOpen = canEvaluateNow(period);   // 평가 기간 (관리자·대표이사는 항상 true)
 
@@ -2269,6 +2578,25 @@ function renderUserHome() {
         </span>
         <h3>평가 결과 보기</h3>
         <p>담당 대상자 결과 열람</p>
+      </div>`);
+  }
+  if (showProb) {
+    const myProb = probRoundsFor(session.userName);
+    const period0 = getActivePeriod() || resolveEvalPeriod();
+    const todo = myProb.filter(m => !isEvalSubmitted(probFindEval(m.emp, m.round, period0))).length;
+    cards.push(`
+      <div class="choice-card c-eval" role="button" tabindex="0"
+           onclick="go('prob-list')" onkeydown="if(event.key==='Enter')go('prob-list')">
+        <span class="icon-wrap">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>
+            <line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/>
+          </svg>
+        </span>
+        <h3>수습평가</h3>
+        <p>${todo > 0
+            ? `신규 입사자 수습평가 <b style="color:var(--danger)">${todo}건 대기</b>`
+            : `<span style="color:var(--success);font-weight:700">✅ 담당 평가 완료</span>`}</p>
       </div>`);
   }
   if (showAdmin) {
@@ -3327,6 +3655,14 @@ function startEvalForm(dept, name, assignedRound) {
   // 수습 제외 대상은 평가 폼 진입 차단
   const emp = EMPLOYEES.find(e => e.dept === dept && e.name === name);
   const activePeriod = getActivePeriod() || resolveEvalPeriod();
+  // 수습평가는 반기 평가기간·자기평가와 무관하게 상시 진행 (수시 평가)
+  if (isProbationRound(assignedRound)) {
+    if (!emp) return;
+    session.selectedEmpDept = dept;
+    session.selectedEmp = name;
+    session.selectedRound = assignedRound;
+    return go("eval-form");
+  }
   if (emp && isProbationExempt(emp, activePeriod)) {
     alert(`${name}은(는) 수습 기간으로 이번 반기 평가 대상에서 제외됩니다.`);
     return;
@@ -3347,6 +3683,80 @@ function startEvalForm(dept, name, assignedRound) {
   go("eval-form");
 }
 
+/* --- 수습평가: 내 대상자 목록 + 진행 현황 --- */
+function renderProbList() {
+  if (!session.userName) return go("home");
+  const period = getActivePeriod() || resolveEvalPeriod();
+  const admin = isAdminUser();
+  const mine = probRoundsFor(session.userName);
+  if (!admin && !mine.length) {
+    $app().innerHTML = `<div class="card"><div class="notice warn">배정된 수습평가 대상자가 없습니다.</div>
+      <button class="secondary small" onclick="go('home')">← 홈</button></div>`;
+    return;
+  }
+  session.evaluatorName = `${session.userName}${session.userRank ? " " + session.userRank : ""}`.trim();
+  const list = admin ? getProbationTargets() : mine.map(m => ({ emp: m.emp, info: m.info }))
+    .filter((v, i, a) => a.findIndex(x => x.emp.name === v.emp.name && x.emp.dept === v.emp.dept) === i);
+
+  const rows = list.map(t => {
+    const sm = probSummary(t.emp, period);
+    const d = probDaysLeft(t.info.dueAt);
+    const myRounds = mine.filter(m => m.emp.name === t.emp.name && m.emp.dept === t.emp.dept).map(m => m.round);
+    const cell = (round, score, draft, vd) => {
+      const who = round === PROB_R1 ? t.info.r1 : t.info.r2;
+      const can = myRounds.includes(round);
+      const btn = can
+        ? `<button class="small" onclick="startEvalForm('${t.emp.dept}','${t.emp.name}','${round}')">${score !== null ? "수정" : (draft ? "이어서" : "평가하기")}</button>`
+        : "";
+      return `<td style="text-align:center">
+        <div class="mini" style="color:var(--muted)">${who ? esc(who.name + (who.title ? " " + who.title : "")) : "<span style='color:var(--danger)'>미지정</span>"}</div>
+        <div style="font-weight:700;margin:2px 0">${score !== null ? fmtScore(score) : (draft ? `<span class="chip draft" style="font-size:10px">임시저장</span>` : `<span class="mini muted">미제출</span>`)}</div>
+        ${vd.verdict ? `<div class="mini" style="color:${probVerdictColor(vd.verdict)};font-weight:700">${esc(vd.verdict)}</div>` : ``}
+        ${btn}
+      </td>`;
+    };
+    return `<tr>
+      <td>${esc(t.emp.dept)}</td>
+      <td><b>${esc(t.emp.name)}</b> <span class="mini">${esc(t.emp.rank || "")}</span></td>
+      <td class="mini">${esc(probFmtDate(t.info.joinedAt))}</td>
+      <td class="mini">${esc(probFmtDate(t.info.endAt))}</td>
+      <td class="mini" style="white-space:nowrap">${esc(probFmtDate(t.info.dueAt))}
+        ${d === null ? "" : (d < 0 ? `<br><span style="color:var(--danger);font-weight:700">마감 ${-d}일 경과</span>`
+                                   : `<br><span style="color:${d <= 3 ? "var(--danger)" : "var(--muted)"};font-weight:700">D-${d}</span>`)}</td>
+      ${cell(PROB_R1, sm.s1, sm.draft1, sm.v1)}
+      ${cell(PROB_R2, sm.s2, sm.draft2, sm.v2)}
+      <td style="text-align:center;font-weight:800">${sm.avg !== null ? fmtScore(sm.avg) : "-"}</td>
+      <td style="text-align:center">${sm.finalVerdict
+        ? `<span class="chip" style="background:${probVerdictColor(sm.finalVerdict)}1a;color:${probVerdictColor(sm.finalVerdict)};font-weight:800">${esc(sm.finalVerdict)}</span>`
+        : `<span class="mini muted">1·2차 완료 후 산출</span>`}</td>
+    </tr>`;
+  }).join("");
+
+  $app().innerHTML = `
+    <div class="card">
+      <div class="flex between">
+        <div>
+          <h2 style="margin:0">수습평가</h2>
+          <div class="mini">신규 입사자 수습기간 평가 · ${admin ? "전체 대상자" : "내 담당 대상자"} ${list.length}명</div>
+        </div>
+        <button class="secondary small" onclick="go('home')">← 홈</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="notice" style="margin-bottom:12px;background:#f5f7fb;border:1px solid #dbe4f2;border-radius:8px;padding:10px 12px;font-size:12.5px;color:#333">
+        평가 마감은 <b>수습 만료 ${PROB_DUE_DAYS}일 전</b>입니다. 1차(직속 상급자)와 2차(부서장)는 <b>순서에 관계없이</b> 각각 진행할 수 있습니다.
+        최종 전환 판정은 <b>1·2차 평균</b> 기준 — 적합 80점 이상 / 조건부 70~79점 / 부적합 70점 미만.
+      </div>
+      ${list.length ? `<div style="overflow-x:auto"><table class="result-table">
+        <thead><tr>
+          <th>부서</th><th>성명</th><th>입사일</th><th>수습 만료</th><th>평가 마감</th>
+          <th style="text-align:center">1차 (상급자)</th><th style="text-align:center">2차 (부서장)</th>
+          <th style="text-align:center">평균</th><th style="text-align:center">전환 판정</th>
+        </tr></thead><tbody>${rows}</tbody></table></div>`
+        : `<div class="notice warn">등록된 수습평가 대상자가 없습니다.</div>`}
+    </div>`;
+}
+
 /* --- 평가 입력 폼 --- */
 function renderEvalForm() {
   const round = session.selectedRound || session.evaluatorRound;
@@ -3356,25 +3766,34 @@ function renderEvalForm() {
   const emp = EMPLOYEES.find(e => e.dept === empDept && e.name === empName);
   if (!emp) return go("eval-home");
   const activePeriod = getActivePeriod() || resolveEvalPeriod();
-  const form = getFormForEmp(activePeriod, emp);
+  const isProb = isProbationRound(round);
+  const form = getFormForContext(activePeriod, emp, round);
   const existing = getEvaluation(empDept, empName, round, activePeriod);
   const totalMax = formTotalPoints(form);
+  const backView = isProb ? "prob-list" : "eval-home";
+  const pinfo = isProb ? getProbationInfo(emp) : null;
   $app().innerHTML = `
     <div class="card">
       <div class="flex between">
         <div>
           <h2 style="margin:0">${esc(form.title)}</h2>
-          <div class="mini">${esc(empDept)} · ${esc(emp.name)} ${esc(emp.rank)} · ${esc(displayRound(round))} 평가자: ${esc(session.evaluatorName)} · <b>${esc(periodLabel(activePeriod))}</b></div>
+          <div class="mini">${esc(empDept)} · ${esc(emp.name)} ${esc(emp.rank)} · ${isProb ? esc(probRoundLabel(round)) : esc(displayRound(round)) + " 평가자: " + esc(session.evaluatorName)} · <b>${esc(periodLabel(activePeriod))}</b></div>
         </div>
         <div class="flex" style="gap:8px">
           <span class="period-badge">🗓 ${esc(periodLabel(activePeriod))}</span>
-          <button class="secondary small" onclick="go('eval-home')">← 목록</button>
+          <button class="secondary small" onclick="go('${backView}')">← 목록</button>
         </div>
       </div>
     </div>
+    ${isProb && pinfo ? `<div class="card" style="padding:12px 16px">
+      <div style="display:flex;gap:18px;flex-wrap:wrap;font-size:13px">
+        <span><b>입사일</b> ${esc(probFmtDate(pinfo.joinedAt))}</span>
+        <span><b>수습 만료일</b> ${esc(probFmtDate(pinfo.endAt))}</span>
+        <span><b>평가 마감</b> ${esc(probFmtDate(pinfo.dueAt))}${(() => { const d = probDaysLeft(pinfo.dueAt); return d === null ? "" : (d < 0 ? ` <span style="color:var(--danger);font-weight:700">(마감 ${-d}일 경과)</span>` : ` <span style="color:${d <= 3 ? "var(--danger)" : "var(--muted)"};font-weight:700">(D-${d})</span>`); })()}</span>
+      </div></div>` : ``}
     <div class="card">
-      ${renderSubmissionWindowBanner(activePeriod)}
-      ${renderSelfEvalReference(empDept, empName, activePeriod)}
+      ${isProb ? `` : renderSubmissionWindowBanner(activePeriod)}
+      ${isProb ? `` : renderSelfEvalReference(empDept, empName, activePeriod)}
       ${existing ? `<div class="notice info">이미 <b>${esc(periodLabel(activePeriod))}</b>에 ${isEvalSubmitted(existing) ? "<b>제출 완료된 평가</b>" : "<b>임시저장된 평가</b>"}가 있습니다. 수정 후 다시 저장하면 갱신됩니다.</div>` : ""}
       <div class="notice" style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:12px;padding:10px 12px;background:#f5f7fb;border:1px solid #dbe4f2;border-radius:8px;font-size:12px;color:#333">
         <span><b>A</b> 매우우수 · 100%</span>
@@ -3408,18 +3827,88 @@ function renderEvalForm() {
           <label>총평 / 코멘트</label>
           <textarea id="comment" placeholder="자유 기술">${esc(existing ? existing.comment : "")}</textarea>
         </div>
+        ${isProb ? renderProbVerdictBlock(existing) : ``}
         <div class="flex between" style="margin-top:20px">
-          <button class="secondary" type="button" onclick="go('eval-home')">취소</button>
+          <button class="secondary" type="button" onclick="go('${backView}')">취소</button>
           <div class="flex" style="gap:8px">
-            <button id="btn-eval-draft" class="secondary" type="button" onclick="submitEval('draft')" ${canDraftEval(activePeriod) ? "" : "disabled"} title="입력한 내용을 임시로 저장 (미평가 문항 허용)">💾 임시저장</button>
-            <button id="btn-eval-submit" type="submit" ${canSubmitEval(activePeriod) ? "" : "disabled"} title="${canSubmitEval(activePeriod) ? "최종 제출" : "평가 제출 기간에만 가능"}">📤 ${existing && isEvalSubmitted(existing) ? "수정 제출" : "제출"}</button>
+            <button id="btn-eval-draft" class="secondary" type="button" onclick="submitEval('draft')" ${isProb || canDraftEval(activePeriod) ? "" : "disabled"} title="입력한 내용을 임시로 저장 (미평가 문항 허용)">💾 임시저장</button>
+            <button id="btn-eval-submit" type="submit" ${isProb || canSubmitEval(activePeriod) ? "" : "disabled"} title="${isProb || canSubmitEval(activePeriod) ? "최종 제출" : "평가 제출 기간에만 가능"}">📤 ${existing && isEvalSubmitted(existing) ? "수정 제출" : "제출"}</button>
           </div>
         </div>
       </form>
     </div>
   `;
   attachFormHandlers(form);
+  session.__probForm = isProb;
   recalcTotal();
+}
+
+/* --- 수습평가: 정규직 전환 의견 블록 --- */
+function renderProbVerdictBlock(existing) {
+  const cur = probVerdictFrom(existing);
+  return `
+    <div id="prob-verdict" style="margin-top:20px;border:1px solid #c7d2fe;background:#f8faff;border-radius:10px;padding:14px 16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+        <b style="color:var(--primary);font-size:15px">정규직 전환 의견</b>
+        <span class="mini" style="color:var(--muted)">총점 기준 자동 선택 · 적합 80점 이상 / 조건부 70~79점 / 부적합 70점 미만 — 필요 시 변경 가능</span>
+      </div>
+      <div class="flex" style="gap:10px;flex-wrap:wrap">
+        ${PROB_VERDICTS.map(v => `
+          <label class="prob-vd" data-v="${esc(v)}" style="flex:1;min-width:150px;border:2px solid var(--border);border-radius:8px;padding:10px 12px;cursor:pointer;font-weight:700;display:flex;align-items:center;gap:8px">
+            <input type="radio" name="probverdict" value="${esc(v)}" ${cur.verdict === v ? "checked" : ""} onchange="onProbVerdictChange()">
+            <span>${esc(v)}</span>
+            <span class="mini auto-badge" style="display:none;margin-left:auto;color:var(--muted);font-weight:600">자동</span>
+          </label>`).join("")}
+      </div>
+      <div style="margin-top:10px">
+        <label>의견 / 사유 <span id="prob-reason-req" class="mini" style="color:var(--danger);display:none">· 자동 판정과 다르게 선택하셨습니다. 사유를 반드시 기재해 주세요.</span></label>
+        <textarea id="prob-reason" placeholder="조건부 선택 시 연장 기간과 보완 과제를 함께 기재해 주세요.">${esc(cur.reason)}</textarea>
+      </div>
+    </div>`;
+}
+function probCurrentTotal() {
+  const el = document.getElementById("total-score");
+  const v = parseFloat(el ? el.textContent : "");
+  return isNaN(v) ? null : v;
+}
+function probAllScored() {
+  const root = evalFormRoot();
+  const cells = root ? root.querySelectorAll(".subtotal-cell") : [];
+  for (let i = 0; i < cells.length; i++) if (isNaN(parseFloat(cells[i].textContent))) return false;
+  return cells.length > 0;
+}
+// 점수 변동 시 자동 판정 반영 (사용자가 직접 바꾼 적이 없을 때만 자동 선택)
+function probSyncVerdict() {
+  if (!session.__probForm) return;
+  const box = document.getElementById("prob-verdict");
+  if (!box) return;
+  const auto = probAllScored() ? probVerdictOf(probCurrentTotal()) : "";
+  box.querySelectorAll(".prob-vd").forEach(l => {
+    const isAuto = !!auto && l.dataset.v === auto;
+    l.querySelector(".auto-badge").style.display = isAuto ? "" : "none";
+    l.style.borderColor = isAuto ? probVerdictColor(auto) : "var(--border)";
+  });
+  const picked = box.querySelector('input[name="probverdict"]:checked');
+  if (auto && (!picked || !session.__probVerdictTouched)) {
+    const t = box.querySelector(`input[name="probverdict"][value="${CSS.escape(auto)}"]`);
+    if (t) t.checked = true;
+  }
+  probMarkVerdictDiff(auto);
+}
+function probMarkVerdictDiff(auto) {
+  const box = document.getElementById("prob-verdict");
+  if (!box) return;
+  const picked = box.querySelector('input[name="probverdict"]:checked');
+  const req = document.getElementById("prob-reason-req");
+  if (req) req.style.display = (auto && picked && picked.value !== auto) ? "" : "none";
+  box.querySelectorAll(".prob-vd").forEach(l => {
+    const on = picked && l.dataset.v === picked.value;
+    l.style.background = on ? "#eef2ff" : "#fff";
+  });
+}
+function onProbVerdictChange() {
+  session.__probVerdictTouched = true;
+  probMarkVerdictDiff(probAllScored() ? probVerdictOf(probCurrentTotal()) : "");
 }
 
 // 하위 문항의 등급별 점수 계산
@@ -3585,6 +4074,7 @@ function recalcTotal() {
   root.querySelectorAll("[id^='itemsum-']").forEach(el2 => {
     updateItemSum(el2.id.replace("itemsum-", ""));
   });
+  probSyncVerdict();
 }
 
 // mode: "submit" (최종 제출) | "draft" (임시저장)
@@ -3598,14 +4088,16 @@ async function submitEval(mode) {
   const empDept = session.selectedEmpDept || session.evaluatorDept;
   const emp = EMPLOYEES.find(e => e.dept === empDept && e.name === empName);
   const activePeriod = getActivePeriod() || resolveEvalPeriod();
-  const form = getFormForEmp(activePeriod, emp);
+  const isProb = isProbationRound(round);
+  const form = getFormForContext(activePeriod, emp, round);
   const errEl = document.getElementById("form-err");
   const showErr = (msg) => {
     errEl.innerHTML = `<div class="notice err">${msg}</div>`;
     window.scrollTo({top:0, behavior:"smooth"});
   };
   // 평가 기간 검증 — 기간 밖에서는 임시저장·제출 모두 차단 (관리자 · 대표이사 제외)
-  if (!canEvaluateNow(activePeriod)) {
+  // 수습평가는 수시 평가이므로 반기 평가기간과 무관하게 항상 가능
+  if (!isProb && !canEvaluateNow(activePeriod)) {
     alert(`🔒 평가 기간이 아닙니다.\n\n${evalBlockedMessage(activePeriod)}\n\n문의: 담당자 내선 ${HR_EXT}`);
     return showErr(`${esc(evalBlockedMessage(activePeriod)).replace(/\n/g, " ")} 평가 저장·제출이 불가합니다. (문의: 담당자 내선 ${esc(HR_EXT)})`);
   }
@@ -3636,11 +4128,29 @@ async function submitEval(mode) {
   const totalRaw = Object.values(scores).reduce((a,b)=>a+b,0);
   const total = Math.round(totalRaw * 10) / 10;
   const comment = (document.getElementById("comment") || {}).value || "";
+  // 수습평가: 정규직 전환 의견 (점수 합산에서 제외되도록 __ 접두 키로 보관)
+  if (isProb) {
+    const box = document.getElementById("prob-verdict");
+    const picked = box ? box.querySelector('input[name="probverdict"]:checked') : null;
+    const reason = (document.getElementById("prob-reason") || {}).value || "";
+    const auto = probVerdictOf(total);
+    if (mode === "submit") {
+      if (!picked) return showErr("정규직 전환 의견을 선택해 주세요.");
+      if (picked.value !== auto && !reason.trim()) {
+        return showErr(`자동 판정(<b>${esc(auto)}</b>)과 다른 의견(<b>${esc(picked.value)}</b>)을 선택하셨습니다. 사유를 반드시 기재해 주세요.`);
+      }
+    }
+    if (picked) scores.__verdict = picked.value;
+    if (reason.trim()) scores.__verdictReason = reason.trim();
+  }
+  const evaluatorName = isProb
+    ? (session.evaluatorName || `${session.userName || ""}${session.userRank ? " " + session.userRank : ""}`.trim())
+    : session.evaluatorName;
   const ev = {
     dept: empDept, empName, empRank: emp.rank, rankCategory: emp.rankCategory,
     round,
     period: activePeriod,
-    evaluatorName: session.evaluatorName,
+    evaluatorName,
     scores, total, comment,
     submittedAt: mode === "submit" ? new Date().toISOString() : ""
   };
@@ -3654,15 +4164,17 @@ async function submitEval(mode) {
   try {
     await upsertEvaluation(ev);
     if (mode === "submit") {
-      alert(`${empName} ${emp.rank} 평가가 제출되었습니다. (총점 ${total}점)`);
+      alert(isProb
+        ? `${empName} ${emp.rank} 수습평가가 제출되었습니다.\n총점 ${total}점 · 전환 의견: ${scores.__verdict || "-"}`
+        : `${empName} ${emp.rank} 평가가 제출되었습니다. (총점 ${total}점)`);
     } else {
       alert(`${empName} ${emp.rank} 평가가 임시저장되었습니다. 계속 이어서 작성할 수 있어요.`);
     }
-    go("eval-home");
+    go(isProb ? "prob-list" : "eval-home");
   } catch (e) {
     showErr(`서버 저장 실패: ${esc(e.message)}. 네트워크 상태를 확인해 주세요.`);
-    if (btnSubmit) btnSubmit.disabled = !canSubmitEval(activePeriod);
-    if (btnDraft)  btnDraft.disabled  = !canDraftEval(activePeriod);
+    if (btnSubmit) btnSubmit.disabled = !(isProb || canSubmitEval(activePeriod));
+    if (btnDraft)  btnDraft.disabled  = !(isProb || canDraftEval(activePeriod));
     if (activeBtn) activeBtn.innerHTML = activeOrig;
   }
 }
@@ -4248,6 +4760,7 @@ function renderAdminHome() {
     ["periods",    "반기 관리"],
     ["compare",    "반기 비교"],
     ["employees",  "직원 관리"],
+    ["probation",  "수습평가"],
     ["forms",      "평가 항목 관리"],
     ["security",   "보안"]
   ].filter(([key]) => key !== "accounts" || canSeeAccountsTab());
@@ -4293,8 +4806,180 @@ function setAdminTab(tab) {
   else if (tab === "periods") renderAdminPeriods(body);
   else if (tab === "compare") renderAdminCompare(body);
   else if (tab === "employees") renderAdminEmployees(body);
+  else if (tab === "probation") renderAdminProbation(body);
   else if (tab === "forms") renderAdminForms(body);
   else if (tab === "security") renderAdminSecurity(body);
+}
+
+/* --- 관리자: 수습평가 대상자 관리 --- */
+function renderAdminProbation(body) {
+  const period = getActivePeriod() || resolveEvalPeriod();
+  const targets = getProbationTargets();
+  const edit = session.__probEdit || null;
+
+  const sumRow = { 적합: 0, "조건부(수습 연장)": 0, 부적합: 0, 진행중: 0 };
+  targets.forEach(t => {
+    const sm = probSummary(t.emp, period);
+    if (sm.finalVerdict) sumRow[sm.finalVerdict]++; else sumRow["진행중"]++;
+  });
+
+  const rows = targets.map(t => {
+    const sm = probSummary(t.emp, period);
+    const d = probDaysLeft(t.info.dueAt);
+    const key = `${t.emp.dept}|${t.emp.name}`;
+    const who = r => r ? esc(r.name + (r.title ? " " + r.title : "")) : `<span style="color:var(--danger)">미지정</span>`;
+    return `<tr>
+      <td>${esc(t.emp.dept)}</td>
+      <td><b>${esc(t.emp.name)}</b> <span class="mini">${esc(t.emp.rank || "")}</span></td>
+      <td class="mini">${esc(probFmtDate(t.info.joinedAt))}</td>
+      <td class="mini">${esc(probFmtDate(t.info.endAt))}</td>
+      <td class="mini" style="white-space:nowrap">${esc(probFmtDate(t.info.dueAt))}
+        ${d === null ? "" : (d < 0 ? ` <span style="color:var(--danger);font-weight:700">(${-d}일 경과)</span>`
+                                   : ` <span style="color:${d <= 3 ? "var(--danger)" : "var(--muted)"};font-weight:700">(D-${d})</span>`)}</td>
+      <td class="mini">${who(t.info.r1)}<br>${sm.s1 !== null ? `<b>${fmtScore(sm.s1)}</b> <span style="color:${probVerdictColor(sm.v1.verdict)}">${esc(sm.v1.verdict)}</span>` : (sm.draft1 ? `<span class="chip draft" style="font-size:10px">임시저장</span>` : `<span class="muted">미제출</span>`)}</td>
+      <td class="mini">${who(t.info.r2)}<br>${sm.s2 !== null ? `<b>${fmtScore(sm.s2)}</b> <span style="color:${probVerdictColor(sm.v2.verdict)}">${esc(sm.v2.verdict)}</span>` : (sm.draft2 ? `<span class="chip draft" style="font-size:10px">임시저장</span>` : `<span class="muted">미제출</span>`)}</td>
+      <td style="text-align:center;font-weight:800">${sm.avg !== null ? fmtScore(sm.avg) : "-"}</td>
+      <td style="text-align:center">${sm.finalVerdict
+        ? `<span class="chip" style="background:${probVerdictColor(sm.finalVerdict)}1a;color:${probVerdictColor(sm.finalVerdict)};font-weight:800">${esc(sm.finalVerdict)}</span>`
+        : `<span class="mini muted">진행중</span>`}</td>
+      <td style="text-align:right;white-space:nowrap">
+        <button class="small secondary" onclick="probEdit('${esc(t.emp.dept)}','${esc(t.emp.name)}')">수정</button>
+        <button class="small danger" onclick="probRemove('${esc(t.emp.dept)}','${esc(t.emp.name)}')">해제</button>
+      </td>
+    </tr>`;
+  }).join("");
+
+  body.innerHTML = `
+    <div class="flex between" style="flex-wrap:wrap;gap:10px;margin-bottom:12px">
+      <div>
+        <h3 style="margin:0">수습평가 대상자</h3>
+        <div class="mini">수습기간은 개인별 1~3개월 · 평가 마감은 수습 만료 ${PROB_DUE_DAYS}일 전 · 1·2차 평가자는 수동 지정</div>
+      </div>
+      <button class="small" onclick="probAdd()">+ 대상자 등록</button>
+    </div>
+    <div class="flex" style="gap:10px;flex-wrap:wrap;margin-bottom:12px">
+      ${[["진행중", sumRow["진행중"], "#64748b"], ["적합", sumRow["적합"], "#059669"],
+         ["조건부(수습 연장)", sumRow["조건부(수습 연장)"], "#d97706"], ["부적합", sumRow["부적합"], "#dc2626"]]
+        .map(([k, v, c]) => `<div style="flex:1;min-width:120px;border:1px solid var(--border);border-radius:8px;padding:10px 12px">
+          <div class="mini" style="color:${c};font-weight:700">${esc(k)}</div>
+          <div style="font-size:22px;font-weight:800;color:${c}">${v}<span style="font-size:12px;color:var(--muted)">명</span></div>
+        </div>`).join("")}
+    </div>
+    ${edit ? renderProbEditor(edit) : ``}
+    ${targets.length ? `<div style="overflow-x:auto"><table class="result-table">
+      <thead><tr><th>부서</th><th>성명</th><th>입사일</th><th>수습 만료</th><th>평가 마감</th>
+        <th>1차 (상급자)</th><th>2차 (부서장)</th><th style="text-align:center">평균</th>
+        <th style="text-align:center">전환 판정</th><th></th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`
+      : `<div class="notice warn">등록된 수습평가 대상자가 없습니다. [+ 대상자 등록] 으로 추가해 주세요.</div>`}
+    <div class="notice" style="margin-top:14px;background:#f5f7fb;border:1px solid #dbe4f2;border-radius:8px;padding:10px 12px;font-size:12.5px;color:#333">
+      · 수습평가 결과는 부서 순위·S/A/B/C 등급 배분·전직원 종합순위에 <b>반영되지 않습니다</b>.<br>
+      · 최종 전환 판정 = 1·2차 평균 기준 — <b>적합 80점 이상 / 조건부 70~79점 / 부적합 70점 미만</b>.
+    </div>`;
+}
+function probEmpOptions(selDept, selName) {
+  return EMPLOYEES.slice()
+    .sort((a, b) => a.dept.localeCompare(b.dept) || a.name.localeCompare(b.name))
+    .map(e => `<option value="${esc(e.dept + "|" + e.name)}" ${selDept === e.dept && selName === e.name ? "selected" : ""}>${esc(e.dept)} · ${esc(e.name)} ${esc(e.rank || "")}</option>`).join("");
+}
+function probEvaluatorOptions(sel) {
+  const names = new Map();
+  EMPLOYEES.forEach(e => names.set(e.name, e));
+  Object.values(getEvaluators()).forEach(rs => Object.values(rs).forEach(i => {
+    if (i && i.name && !names.has(i.name)) names.set(i.name, { name: i.name, rank: i.title || "", dept: "" });
+  }));
+  return `<option value="">— 선택 —</option>` + [...names.values()]
+    .sort((a, b) => (a.dept || "").localeCompare(b.dept || "") || a.name.localeCompare(b.name))
+    .map(e => {
+      const v = e.name + "|" + (e.rank || "");
+      return `<option value="${esc(v)}" ${sel === e.name ? "selected" : ""}>${esc(e.name)} ${esc(e.rank || "")}${e.dept ? " (" + esc(e.dept) + ")" : ""}</option>`;
+    }).join("");
+}
+function renderProbEditor(ed) {
+  const isNew = !ed.orig;
+  return `
+    <div class="card" style="background:#f8faff;border:1px solid #c7d2fe;margin-bottom:14px">
+      <h3 style="margin-top:0">${isNew ? "수습평가 대상자 등록" : `대상자 수정 — ${esc(ed.name)}`}</h3>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
+        <div><label>대상자</label>
+          ${isNew ? `<select id="pb-emp">${probEmpOptions(ed.dept, ed.name)}</select>`
+                  : `<input value="${esc(ed.dept + " · " + ed.name)}" disabled>`}</div>
+        <div><label>입사일</label><input type="date" id="pb-join" value="${esc(ed.joinedAt || "")}"></div>
+        <div><label>수습 만료일</label><input type="date" id="pb-end" value="${esc(ed.endAt || "")}" onchange="probPreviewDue()"></div>
+        <div><label>평가 마감일 <span class="mini">(만료 ${PROB_DUE_DAYS}일 전 · 자동)</span></label>
+          <input id="pb-due" value="${esc(probFmtDate(probDueDate(ed.endAt)))}" disabled></div>
+        <div><label>1차 평가자 — 직속 상급자</label><select id="pb-r1">${probEvaluatorOptions(ed.r1 && ed.r1.name)}</select></div>
+        <div><label>2차 평가자 — 부서장</label><select id="pb-r2">${probEvaluatorOptions(ed.r2 && ed.r2.name)}</select></div>
+      </div>
+      <div id="pb-err"></div>
+      <div class="flex" style="gap:8px;margin-top:14px;justify-content:flex-end">
+        <button class="secondary small" onclick="probCancel()">취소</button>
+        <button class="small" onclick="probSave()">💾 저장</button>
+      </div>
+    </div>`;
+}
+function probPreviewDue() {
+  const v = (document.getElementById("pb-end") || {}).value || "";
+  const el = document.getElementById("pb-due");
+  if (el) el.value = probFmtDate(probDueDate(v));
+}
+function probAdd() {
+  const e0 = EMPLOYEES[0] || {};
+  session.__probEdit = { orig: null, dept: e0.dept || "", name: e0.name || "", joinedAt: "", endAt: "", r1: null, r2: null };
+  renderAdminProbation(document.getElementById("admin-body"));
+}
+function probEdit(dept, name) {
+  const emp = EMPLOYEES.find(e => e.dept === dept && e.name === name);
+  const info = emp ? getProbationInfo(emp) : null;
+  session.__probEdit = Object.assign({ orig: { dept, name }, dept, name }, info || { joinedAt: "", endAt: "", r1: null, r2: null });
+  renderAdminProbation(document.getElementById("admin-body"));
+}
+function probCancel() { session.__probEdit = null; renderAdminProbation(document.getElementById("admin-body")); }
+async function probSave() {
+  const ed = session.__probEdit;
+  if (!ed) return;
+  const err = document.getElementById("pb-err");
+  const fail = m => { err.innerHTML = `<div class="notice err" style="margin-top:10px">${m}</div>`; };
+  let dept = ed.dept, name = ed.name;
+  if (!ed.orig) {
+    const sel = (document.getElementById("pb-emp") || {}).value || "";
+    const parts = sel.split("|");
+    dept = parts[0]; name = parts[1];
+  }
+  const emp = EMPLOYEES.find(e => e.dept === dept && e.name === name);
+  if (!emp) return fail("대상자를 찾을 수 없습니다.");
+  const joinedAt = (document.getElementById("pb-join") || {}).value || "";
+  const endAt    = (document.getElementById("pb-end") || {}).value || "";
+  if (!endAt) return fail("수습 만료일을 입력해 주세요. 평가 마감일 계산에 사용됩니다.");
+  const parseSel = id => {
+    const v = (document.getElementById(id) || {}).value || "";
+    if (!v) return null;
+    const a = v.split("|");
+    return { name: (a[0] || "").trim(), title: (a[1] || "").trim() };
+  };
+  const r1 = parseSel("pb-r1"), r2 = parseSel("pb-r2");
+  if (!r1 && !r2) return fail("1차 또는 2차 평가자를 최소 한 명 지정해 주세요.");
+  if (r1 && r2 && r1.name === r2.name) return fail("1차와 2차 평가자를 서로 다르게 지정해 주세요.");
+  if ((r1 && r1.name === name) || (r2 && r2.name === name)) return fail("본인을 평가자로 지정할 수 없습니다.");
+  const srv = getServerEmployees().find(e => e.dept === dept && e.name === name);
+  const notes = withProbationNotes((srv && srv.notes) || emp.notes || "", { joinedAt, endAt, r1, r2 });
+  try {
+    // 기존 레코드를 그대로 유지한 채 notes 만 교체 (rank·pw 등 유실 방지)
+    await upsertEmployeeRemote(Object.assign({}, srv || {}, { dept, name, notes }));
+    session.__probEdit = null;
+    renderAdminProbation(document.getElementById("admin-body"));
+  } catch (e) { fail("저장 실패: " + esc(e.message)); }
+}
+async function probRemove(dept, name) {
+  const emp = EMPLOYEES.find(e => e.dept === dept && e.name === name);
+  if (!emp) return;
+  if (!confirm(`${name} 님을 수습평가 대상에서 해제할까요?\n이미 저장된 수습평가 기록은 삭제되지 않습니다.`)) return;
+  const srv = getServerEmployees().find(e => e.dept === dept && e.name === name);
+  const notes = withProbationNotes((srv && srv.notes) || emp.notes || "", null);
+  try {
+    await upsertEmployeeRemote(Object.assign({}, srv || {}, { dept, name, notes }));
+    renderAdminProbation(document.getElementById("admin-body"));
+  } catch (e) { alert("해제 실패: " + e.message); }
 }
 
 /* --- 관리자: 반기 관리 --- */
@@ -6446,6 +7131,10 @@ window.adminSaveAnnouncement = adminSaveAnnouncement;
 window.adminClearAnnouncement = adminClearAnnouncement;
 window.dismissAnnouncePopup = dismissAnnouncePopup;
 window.tryUnifiedLogin = tryUnifiedLogin;
+window.renderProbList = renderProbList;
+window.probAdd = probAdd; window.probEdit = probEdit; window.probCancel = probCancel;
+window.probSave = probSave; window.probRemove = probRemove; window.probPreviewDue = probPreviewDue;
+window.onProbVerdictChange = onProbVerdictChange;
 window.logoutUser = logoutUser;
 window.submitForceChangePw = submitForceChangePw;
 window.submitSelfEval = submitSelfEval;
