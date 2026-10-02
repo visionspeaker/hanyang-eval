@@ -2044,6 +2044,28 @@ function getAdjustmentDetail(period, dept, empName) {
 }
 /* ---- 직원 명단 (employees) ---- */
 function getServerEmployees() { return _cache.employees || []; }
+// 직원 로그인 비밀번호 설정 여부 (서버는 보안상 hasPw 플래그만 내려준다)
+function empHasLogin(dept, name) {
+  const srv = getServerEmployees().find(e => e.dept === dept && e.name === name);
+  if (srv) {
+    if (typeof srv.hasPw === "boolean") return srv.hasPw;
+    if (srv.pw != null && String(srv.pw).length) return true;
+  }
+  const loc = EMPLOYEES.find(e => e.dept === dept && e.name === name);
+  return !!(loc && loc.pw != null && String(loc.pw).length);
+}
+// 관리자: 직원 로그인 비밀번호 초기화 (최초 로그인 시 변경 강제)
+async function empResetPw(dept, name) {
+  if (!confirm(`${dept} ${name} 님의 로그인 비밀번호를 초기값(${DEFAULT_EMP_PW})으로 설정할까요?\n본인이 처음 로그인하면 새 비밀번호로 변경하게 됩니다.`)) return;
+  try {
+    await remotePost("setEmployeePw", { dept, name, pw: DEFAULT_EMP_PW });
+    const srv = getServerEmployees().find(e => e.dept === dept && e.name === name);
+    if (srv) srv.hasPw = true;
+    alert(`${name} 님의 비밀번호가 초기값으로 설정되었습니다.\n초기 비밀번호: ${DEFAULT_EMP_PW}`);
+    const body = document.getElementById("admin-body");
+    if (body) { if (session.adminTab === "probation") renderAdminProbation(body); else renderAdminEmployees(body); }
+  } catch (e) { alert("설정 실패: " + e.message); }
+}
 async function upsertEmployeeRemote(emp) {
   // 로컬 캐시 갱신
   const all = _cache.employees || [];
@@ -4831,7 +4853,14 @@ function renderAdminProbation(body) {
     const sm = probSummary(t.emp, period);
     const d = probDaysLeft(t.info.dueAt);
     const key = `${t.emp.dept}|${t.emp.name}`;
-    const who = r => r ? esc(r.name + (r.title ? " " + r.title : "")) : `<span style="color:var(--danger)">미지정</span>`;
+    const who = r => {
+      if (!r) return `<span style="color:var(--danger)">미지정</span>`;
+      const e = EMPLOYEES.find(x => x.name === r.name);
+      const ok = e ? empHasLogin(e.dept, e.name) : true;
+      return esc(r.name + (r.title ? " " + r.title : "")) + (ok ? "" :
+        ` <span style="color:#dc2626;font-weight:700" title="로그인 비밀번호가 설정되지 않아 평가를 진행할 수 없습니다">⚠ 로그인 미설정</span>
+          <button class="small secondary" style="padding:1px 5px;font-size:10px" onclick="empResetPw('${esc(e.dept)}','${esc(e.name)}')">초기화</button>`);
+    };
     return `<tr>
       <td>${esc(t.emp.dept)}</td>
       <td><b>${esc(t.emp.name)}</b> <span class="mini">${esc(t.emp.rank || "")}</span></td>
@@ -5536,6 +5565,10 @@ function renderAdminEmployees(body) {
         <td><b>${esc(e.name)}</b>${isExec ? ' <span class="chip" style="background:#fef3c7;color:#92400e;padding:1px 6px;font-size:10px">임원평가</span>' : ''}</td>
         <td>${esc(e.rank)}</td>
         <td>${esc(e.rankCategory)}</td>
+        <td>${empHasLogin(e.dept, e.name)
+            ? `<span class="mini" style="color:#166534;font-weight:600" title="비밀번호 설정됨 (보안상 조회 불가)">●●●●●● 설정됨</span>`
+            : `<span class="mini" style="color:#dc2626;font-weight:700">미설정</span>
+               <button class="small secondary" style="padding:2px 6px;font-size:10px;margin-left:4px" onclick="empResetPw('${esc(e.dept)}','${esc(e.name)}')">초기화</button>`}</td>
         <td>${inactive ? '<span class="chip" style="background:#fee2e2;color:#991b1b">퇴사</span>' : '<span class="chip done">재직</span>'}</td>
         <td style="white-space:nowrap">
           ${inactive ?
@@ -5576,10 +5609,11 @@ function renderAdminEmployees(body) {
           <th>이름</th>
           <th style="width:70px">직급</th>
           <th style="width:80px">평가표</th>
+          <th style="width:110px">로그인</th>
           <th style="width:70px">상태</th>
           <th style="width:150px">관리</th>
         </tr></thead>
-        <tbody>${rows || `<tr><td colspan="6" style="text-align:center" class="muted">해당 직원이 없습니다.</td></tr>`}</tbody>
+        <tbody>${rows || `<tr><td colspan="7" style="text-align:center" class="muted">해당 직원이 없습니다.</td></tr>`}</tbody>
       </table>
     </div>
   `;
@@ -7203,6 +7237,7 @@ window.renderProbList = renderProbList;
 window.probAdd = probAdd; window.probEdit = probEdit; window.probCancel = probCancel;
 window.probSave = probSave; window.probRemove = probRemove; window.probPreviewDue = probPreviewDue;
 window.probDeptChange = probDeptChange;
+window.empResetPw = empResetPw;
 window.onProbVerdictChange = onProbVerdictChange;
 window.logoutUser = logoutUser;
 window.submitForceChangePw = submitForceChangePw;
