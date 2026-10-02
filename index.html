@@ -2559,7 +2559,7 @@ function renderUserHome() {
   const showSelf = canSelfEvaluate(emp, period);
   const showEval = roles.length > 0;
   const showAdmin = isAdminUser();
-  const showProb = hasProbationRole(session.userName);
+  const showProb = hasProbationRole(session.userName) || isAdminUser();
   const selfDone = showSelf && hasSubmittedSelfEval(emp.dept, emp.name, period);
   const windowOpen = canEvaluateNow(period);   // 평가 기간 (관리자·대표이사는 항상 true)
 
@@ -2607,9 +2607,16 @@ function renderUserHome() {
       </div>`);
   }
   if (showProb) {
-    const myProb = probRoundsFor(session.userName);
     const period0 = getActivePeriod() || resolveEvalPeriod();
-    const todo = myProb.filter(m => !isEvalSubmitted(probFindEval(m.emp, m.round, period0))).length;
+    const myProb = probRoundsFor(session.userName);
+    const adminOnly = !myProb.length;   // 담당 배정이 없는 관리자
+    const pool = adminOnly
+      ? [].concat.apply([], getProbationTargets().map(t => [
+          t.info.r1 ? { emp: t.emp, round: PROB_R1 } : null,
+          t.info.r2 ? { emp: t.emp, round: PROB_R2 } : null
+        ].filter(Boolean)))
+      : myProb;
+    const todo = pool.filter(m => !isEvalSubmitted(probFindEval(m.emp, m.round, period0))).length;
     cards.push(`
       <div class="choice-card c-eval" role="button" tabindex="0"
            onclick="go('prob-list')" onkeydown="if(event.key==='Enter')go('prob-list')">
@@ -2620,9 +2627,11 @@ function renderUserHome() {
           </svg>
         </span>
         <h3>수습평가</h3>
-        <p>${todo > 0
-            ? `신규 입사자 수습평가 <b style="color:var(--danger)">${todo}건 대기</b>`
-            : `<span style="color:var(--success);font-weight:700">✅ 담당 평가 완료</span>`}</p>
+        <p>${!pool.length
+            ? `등록된 수습평가 대상자 없음`
+            : (todo > 0
+              ? `${adminOnly ? "전체" : "신규 입사자"} 수습평가 <b style="color:var(--danger)">${todo}건 대기</b>`
+              : `<span style="color:var(--success);font-weight:700">✅ ${adminOnly ? "전체 평가 완료" : "담당 평가 완료"}</span>`)}</p>
       </div>`);
   }
   if (showAdmin) {
@@ -3730,7 +3739,7 @@ function renderProbList() {
     const myRounds = mine.filter(m => m.emp.name === t.emp.name && m.emp.dept === t.emp.dept).map(m => m.round);
     const cell = (round, score, draft, vd) => {
       const who = round === PROB_R1 ? t.info.r1 : t.info.r2;
-      const can = myRounds.includes(round);
+      const can = myRounds.includes(round) || admin;   // 관리자는 전 라운드 대리 입력 가능
       const btn = can
         ? `<button class="small" onclick="startEvalForm('${t.emp.dept}','${t.emp.name}','${round}')">${score !== null ? "수정" : (draft ? "이어서" : "평가하기")}</button>`
         : "";
@@ -3772,6 +3781,7 @@ function renderProbList() {
       <div class="notice" style="margin-bottom:12px;background:#f5f7fb;border:1px solid #dbe4f2;border-radius:8px;padding:10px 12px;font-size:12.5px;color:#333">
         평가 마감은 <b>수습 만료 ${PROB_DUE_DAYS}일 전</b>입니다. 1차(직속 상급자)와 2차(부서장)는 <b>순서에 관계없이</b> 각각 진행할 수 있습니다.
         최종 전환 판정은 <b>1·2차 평균</b> 기준 — 적합 80점 이상 / 조건부 60~79점 / 부적합 60점 미만.
+        ${admin ? `<br><span style="color:var(--primary);font-weight:700">관리자 권한</span>으로 전체 대상자를 열람하고 있으며, 필요 시 1·2차 평가를 대리 입력할 수 있습니다.` : ``}
       </div>
       ${list.length ? `<div style="overflow-x:auto"><table class="result-table">
         <thead><tr>
