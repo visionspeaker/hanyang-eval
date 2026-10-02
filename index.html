@@ -868,7 +868,11 @@ const PROB_R2 = "수습2차";
 const PROB_ROUNDS = [PROB_R1, PROB_R2];
 const PROB_DUE_DAYS = 7;                       // 수습 만료 7일 전까지 평가 완료
 const PROB_VERDICTS = ["적합", "조건부(수습 연장)", "부적합"];
-const PROB_BANDS = [["적합", 80], ["조건부(수습 연장)", 70]];   // 그 외 부적합
+const PROB_BANDS = [["적합", 80], ["조건부(수습 연장)", 60]];   // 그 외 부적합
+// 직급 → 평가 구분
+const PROB_MGR_RANKS = new Set(["회장","대표이사","부사장","전무","상무","이사","부장","팀장","차장","과장"]);
+const PROB_RANKS = ["사원","연구원","주임","반장","대리","과장","차장","팀장","부장"];
+function probRankCategory(rank) { return PROB_MGR_RANKS.has(String(rank || "").trim()) ? "과장이상" : "대리이하"; }
 function isProbationRound(r) { return r === PROB_R1 || r === PROB_R2; }
 function probRoundLabel(r) { return r === PROB_R1 ? "1차 (직속 상급자)" : r === PROB_R2 ? "2차 (부서장)" : r; }
 function probVerdictOf(score) {
@@ -3745,7 +3749,7 @@ function renderProbList() {
     <div class="card">
       <div class="notice" style="margin-bottom:12px;background:#f5f7fb;border:1px solid #dbe4f2;border-radius:8px;padding:10px 12px;font-size:12.5px;color:#333">
         평가 마감은 <b>수습 만료 ${PROB_DUE_DAYS}일 전</b>입니다. 1차(직속 상급자)와 2차(부서장)는 <b>순서에 관계없이</b> 각각 진행할 수 있습니다.
-        최종 전환 판정은 <b>1·2차 평균</b> 기준 — 적합 80점 이상 / 조건부 70~79점 / 부적합 70점 미만.
+        최종 전환 판정은 <b>1·2차 평균</b> 기준 — 적합 80점 이상 / 조건부 60~79점 / 부적합 60점 미만.
       </div>
       ${list.length ? `<div style="overflow-x:auto"><table class="result-table">
         <thead><tr>
@@ -3850,7 +3854,7 @@ function renderProbVerdictBlock(existing) {
     <div id="prob-verdict" style="margin-top:20px;border:1px solid #c7d2fe;background:#f8faff;border-radius:10px;padding:14px 16px">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
         <b style="color:var(--primary);font-size:15px">정규직 전환 의견</b>
-        <span class="mini" style="color:var(--muted)">총점 기준 자동 선택 · 적합 80점 이상 / 조건부 70~79점 / 부적합 70점 미만 — 필요 시 변경 가능</span>
+        <span class="mini" style="color:var(--muted)">총점 기준 자동 선택 · 적합 80점 이상 / 조건부 60~79점 / 부적합 60점 미만 — 필요 시 변경 가능</span>
       </div>
       <div class="flex" style="gap:10px;flex-wrap:wrap">
         ${PROB_VERDICTS.map(v => `
@@ -4874,42 +4878,85 @@ function renderAdminProbation(body) {
       : `<div class="notice warn">등록된 수습평가 대상자가 없습니다. [+ 대상자 등록] 으로 추가해 주세요.</div>`}
     <div class="notice" style="margin-top:14px;background:#f5f7fb;border:1px solid #dbe4f2;border-radius:8px;padding:10px 12px;font-size:12.5px;color:#333">
       · 수습평가 결과는 부서 순위·S/A/B/C 등급 배분·전직원 종합순위에 <b>반영되지 않습니다</b>.<br>
-      · 최종 전환 판정 = 1·2차 평균 기준 — <b>적합 80점 이상 / 조건부 70~79점 / 부적합 70점 미만</b>.
+      · 최종 전환 판정 = 1·2차 평균 기준 — <b>적합 80점 이상 / 조건부 60~79점 / 부적합 60점 미만</b>.
     </div>`;
 }
-function probEmpOptions(selDept, selName) {
-  return EMPLOYEES.slice()
-    .sort((a, b) => a.dept.localeCompare(b.dept) || a.name.localeCompare(b.name))
-    .map(e => `<option value="${esc(e.dept + "|" + e.name)}" ${selDept === e.dept && selName === e.name ? "selected" : ""}>${esc(e.dept)} · ${esc(e.name)} ${esc(e.rank || "")}</option>`).join("");
+function probDeptList() {
+  const set = new Set(EMPLOYEES.map(e => e.dept).filter(Boolean));
+  Object.keys(getEvaluators()).forEach(d => { if (d && d !== "임원") set.add(d); });
+  return [...set].sort((a, b) => a.localeCompare(b, "ko"));
 }
-function probEvaluatorOptions(sel) {
-  const names = new Map();
-  EMPLOYEES.forEach(e => names.set(e.name, e));
-  Object.values(getEvaluators()).forEach(rs => Object.values(rs).forEach(i => {
-    if (i && i.name && !names.has(i.name)) names.set(i.name, { name: i.name, rank: i.title || "", dept: "" });
-  }));
-  return `<option value="">— 선택 —</option>` + [...names.values()]
-    .sort((a, b) => (a.dept || "").localeCompare(b.dept || "") || a.name.localeCompare(b.name))
-    .map(e => {
-      const v = e.name + "|" + (e.rank || "");
-      return `<option value="${esc(v)}" ${sel === e.name ? "selected" : ""}>${esc(e.name)} ${esc(e.rank || "")}${e.dept ? " (" + esc(e.dept) + ")" : ""}</option>`;
-    }).join("");
+function probDeptOptions(sel) {
+  return probDeptList().map(d => `<option value="${esc(d)}" ${sel === d ? "selected" : ""}>${esc(d)}</option>`).join("");
+}
+function probRankOptions(sel) {
+  return `<option value="">— 직위 선택 —</option>` +
+    PROB_RANKS.map(r => `<option value="${esc(r)}" ${sel === r ? "selected" : ""}>${esc(r)}</option>`).join("");
+}
+// 선택한 부서의 평가자 후보 — 해당 부서 상급자(과장 이상) + 부서 평가자 계정
+function probEvaluatorCandidates(dept, excludeName) {
+  const map = new Map();
+  EMPLOYEES.filter(e => e.dept === dept && e.name !== excludeName).forEach(e => {
+    map.set(e.name, { name: e.name, rank: e.rank || "", senior: probRankCategory(e.rank) === "과장이상" });
+  });
+  const evs = getEvaluators()[dept] || {};
+  Object.values(evs).forEach(i => {
+    if (!i || !i.name || i.name === excludeName) return;
+    if (!map.has(i.name)) map.set(i.name, { name: i.name, rank: i.title || "", senior: true });
+    else map.get(i.name).senior = true;
+  });
+  const arr = [...map.values()];
+  const ord = n => { const i = PROB_RANKS.indexOf(n); return i < 0 ? -1 : i; };
+  arr.sort((a, b) => ord(b.rank) - ord(a.rank) || a.name.localeCompare(b.name, "ko"));
+  return arr;
+}
+function probEvaluatorOptions(dept, sel, excludeName) {
+  const arr = probEvaluatorCandidates(dept, excludeName);
+  const seniors = arr.filter(x => x.senior), others = arr.filter(x => !x.senior);
+  const opt = e => `<option value="${esc(e.name + "|" + (e.rank || ""))}" ${sel === e.name ? "selected" : ""}>${esc(e.name)} ${esc(e.rank || "")}</option>`;
+  let html = `<option value="">— 선택 —</option>`;
+  if (seniors.length) html += `<optgroup label="상급자 (과장 이상)">${seniors.map(opt).join("")}</optgroup>`;
+  if (others.length)  html += `<optgroup label="기타 부서원">${others.map(opt).join("")}</optgroup>`;
+  if (!arr.length)    html += `<option value="" disabled>해당 부서에 등록된 인원이 없습니다</option>`;
+  return html;
+}
+// 부서를 바꾸면 평가자 후보를 다시 그린다
+function probDeptChange() {
+  const ed = session.__probEdit; if (!ed) return;
+  ed.dept = (document.getElementById("pb-dept") || {}).value || ed.dept;
+  ed.name = (document.getElementById("pb-name") || {}).value || "";
+  ed.rank = (document.getElementById("pb-rank") || {}).value || "";
+  ed.joinedAt = (document.getElementById("pb-join") || {}).value || "";
+  ed.endAt = (document.getElementById("pb-end") || {}).value || "";
+  ed.r1 = null; ed.r2 = null;
+  const s1 = document.getElementById("pb-r1"), s2 = document.getElementById("pb-r2");
+  if (s1) s1.innerHTML = probEvaluatorOptions(ed.dept, "", ed.name);
+  if (s2) s2.innerHTML = probEvaluatorOptions(ed.dept, "", ed.name);
 }
 function renderProbEditor(ed) {
   const isNew = !ed.orig;
   return `
     <div class="card" style="background:#f8faff;border:1px solid #c7d2fe;margin-bottom:14px">
       <h3 style="margin-top:0">${isNew ? "수습평가 대상자 등록" : `대상자 수정 — ${esc(ed.name)}`}</h3>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
-        <div><label>대상자</label>
-          ${isNew ? `<select id="pb-emp">${probEmpOptions(ed.dept, ed.name)}</select>`
-                  : `<input value="${esc(ed.dept + " · " + ed.name)}" disabled>`}</div>
+      ${isNew ? `<div class="mini" style="color:var(--muted);margin-bottom:10px">등록하면 해당 부서 <b>신입사원 명단</b>에 자동 추가됩니다. (이번 반기 정기평가에서는 제외되고, 다음 반기부터 정기평가 대상으로 전환됩니다.)</div>` : ``}
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px">
+        <div><label>부서</label>
+          ${isNew ? `<select id="pb-dept" onchange="probDeptChange()">${probDeptOptions(ed.dept)}</select>`
+                  : `<input value="${esc(ed.dept)}" disabled>`}</div>
+        <div><label>성명</label>
+          ${isNew ? `<input id="pb-name" value="${esc(ed.name || "")}" placeholder="예: 홍길동" onchange="probDeptChange()">`
+                  : `<input value="${esc(ed.name)}" disabled>`}</div>
+        <div><label>직위</label>
+          ${isNew ? `<select id="pb-rank">${probRankOptions(ed.rank || "사원")}</select>`
+                  : `<input value="${esc(ed.rank || "")}" disabled>`}</div>
         <div><label>입사일</label><input type="date" id="pb-join" value="${esc(ed.joinedAt || "")}"></div>
         <div><label>수습 만료일</label><input type="date" id="pb-end" value="${esc(ed.endAt || "")}" onchange="probPreviewDue()"></div>
         <div><label>평가 마감일 <span class="mini">(만료 ${PROB_DUE_DAYS}일 전 · 자동)</span></label>
           <input id="pb-due" value="${esc(probFmtDate(probDueDate(ed.endAt)))}" disabled></div>
-        <div><label>1차 평가자 — 직속 상급자</label><select id="pb-r1">${probEvaluatorOptions(ed.r1 && ed.r1.name)}</select></div>
-        <div><label>2차 평가자 — 부서장</label><select id="pb-r2">${probEvaluatorOptions(ed.r2 && ed.r2.name)}</select></div>
+        <div><label>1차 평가자 — 직속 상급자</label>
+          <select id="pb-r1">${probEvaluatorOptions(ed.dept, ed.r1 && ed.r1.name, ed.name)}</select></div>
+        <div><label>2차 평가자 — 부서장</label>
+          <select id="pb-r2">${probEvaluatorOptions(ed.dept, ed.r2 && ed.r2.name, ed.name)}</select></div>
       </div>
       <div id="pb-err"></div>
       <div class="flex" style="gap:8px;margin-top:14px;justify-content:flex-end">
@@ -4924,14 +4971,15 @@ function probPreviewDue() {
   if (el) el.value = probFmtDate(probDueDate(v));
 }
 function probAdd() {
-  const e0 = EMPLOYEES[0] || {};
-  session.__probEdit = { orig: null, dept: e0.dept || "", name: e0.name || "", joinedAt: "", endAt: "", r1: null, r2: null };
+  session.__probEdit = { orig: null, dept: probDeptList()[0] || "", name: "", rank: "사원",
+                         joinedAt: "", endAt: "", r1: null, r2: null };
   renderAdminProbation(document.getElementById("admin-body"));
 }
 function probEdit(dept, name) {
   const emp = EMPLOYEES.find(e => e.dept === dept && e.name === name);
   const info = emp ? getProbationInfo(emp) : null;
-  session.__probEdit = Object.assign({ orig: { dept, name }, dept, name }, info || { joinedAt: "", endAt: "", r1: null, r2: null });
+  session.__probEdit = Object.assign({ orig: { dept, name }, dept, name, rank: (emp && emp.rank) || "" },
+                                    info || { joinedAt: "", endAt: "", r1: null, r2: null });
   renderAdminProbation(document.getElementById("admin-body"));
 }
 function probCancel() { session.__probEdit = null; renderAdminProbation(document.getElementById("admin-body")); }
@@ -4940,14 +4988,18 @@ async function probSave() {
   if (!ed) return;
   const err = document.getElementById("pb-err");
   const fail = m => { err.innerHTML = `<div class="notice err" style="margin-top:10px">${m}</div>`; };
-  let dept = ed.dept, name = ed.name;
-  if (!ed.orig) {
-    const sel = (document.getElementById("pb-emp") || {}).value || "";
-    const parts = sel.split("|");
-    dept = parts[0]; name = parts[1];
+  const isNew = !ed.orig;
+  let dept = ed.dept, name = ed.name, rank = ed.rank || "";
+  if (isNew) {
+    dept = ((document.getElementById("pb-dept") || {}).value || "").trim();
+    name = ((document.getElementById("pb-name") || {}).value || "").trim();
+    rank = ((document.getElementById("pb-rank") || {}).value || "").trim();
+    if (!dept) return fail("부서를 선택해 주세요.");
+    if (!name) return fail("성명을 입력해 주세요.");
+    if (!rank) return fail("직위를 선택해 주세요.");
+    const dup = EMPLOYEES.find(e => e.dept === dept && e.name === name);
+    if (dup && getProbationInfo(dup)) return fail(`${esc(dept)} ${esc(name)} 님은 이미 수습평가 대상자로 등록되어 있습니다.`);
   }
-  const emp = EMPLOYEES.find(e => e.dept === dept && e.name === name);
-  if (!emp) return fail("대상자를 찾을 수 없습니다.");
   const joinedAt = (document.getElementById("pb-join") || {}).value || "";
   const endAt    = (document.getElementById("pb-end") || {}).value || "";
   if (!endAt) return fail("수습 만료일을 입력해 주세요. 평가 마감일 계산에 사용됩니다.");
@@ -4961,11 +5013,27 @@ async function probSave() {
   if (!r1 && !r2) return fail("1차 또는 2차 평가자를 최소 한 명 지정해 주세요.");
   if (r1 && r2 && r1.name === r2.name) return fail("1차와 2차 평가자를 서로 다르게 지정해 주세요.");
   if ((r1 && r1.name === name) || (r2 && r2.name === name)) return fail("본인을 평가자로 지정할 수 없습니다.");
+
   const srv = getServerEmployees().find(e => e.dept === dept && e.name === name);
-  const notes = withProbationNotes((srv && srv.notes) || emp.notes || "", { joinedAt, endAt, r1, r2 });
+  const local = EMPLOYEES.find(e => e.dept === dept && e.name === name);
+  let notes = withProbationNotes((srv && srv.notes) || (local && local.notes) || "",
+                                 { joinedAt, endAt, r1, r2 });
+  const payload = Object.assign({}, srv || {}, { dept, name, notes, active: true });
+  if (isNew) {
+    // 신규 입사자 → 해당 부서 명단에 추가. 이번 반기 정기평가는 제외(수습), 다음 반기부터 자동 복귀.
+    payload.rank = rank;
+    payload.rankCategory = probRankCategory(rank);
+    if (joinedAt) payload.joinedAt = joinedAt;
+    const cur = getActivePeriod() || resolveEvalPeriod();
+    if (cur && notes.indexOf("수습:") < 0) {
+      notes = ("수습:" + cur + "\n" + notes).trim();
+      payload.notes = notes;
+    }
+  } else if (rank) {
+    payload.rank = payload.rank || rank;
+  }
   try {
-    // 기존 레코드를 그대로 유지한 채 notes 만 교체 (rank·pw 등 유실 방지)
-    await upsertEmployeeRemote(Object.assign({}, srv || {}, { dept, name, notes }));
+    await upsertEmployeeRemote(payload);
     session.__probEdit = null;
     renderAdminProbation(document.getElementById("admin-body"));
   } catch (e) { fail("저장 실패: " + esc(e.message)); }
@@ -7134,6 +7202,7 @@ window.tryUnifiedLogin = tryUnifiedLogin;
 window.renderProbList = renderProbList;
 window.probAdd = probAdd; window.probEdit = probEdit; window.probCancel = probCancel;
 window.probSave = probSave; window.probRemove = probRemove; window.probPreviewDue = probPreviewDue;
+window.probDeptChange = probDeptChange;
 window.onProbVerdictChange = onProbVerdictChange;
 window.logoutUser = logoutUser;
 window.submitForceChangePw = submitForceChangePw;
