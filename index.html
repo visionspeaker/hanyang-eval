@@ -8132,7 +8132,7 @@ th{background:#eef2f7;font-weight:700}
 .chk{display:inline-block;margin-right:16px}.chk b{font-size:13px}
 .note{font-size:9px;color:#555;margin-top:3px}
 .op td{font-size:11.3px;vertical-align:top;height:58px;line-height:1.5;white-space:pre-wrap}
-.op th{width:13%;text-align:center}
+.op th{width:13%;text-align:center}.op th .lb1{color:#1d4ed8}.op th .lb2{color:#c2410c}.op th .nm{color:#111;font-weight:600}
 .sign{margin-top:auto;display:flex;justify-content:flex-end;gap:28px;font-size:11px;padding-top:10px;align-items:flex-end}
 .sign .who{display:inline-flex;align-items:flex-end;min-width:170px;border-bottom:1px solid #111;padding:0 2px 3px;gap:6px;position:relative;height:50px}
 .sign .who .nm{padding-bottom:2px}
@@ -8202,7 +8202,7 @@ function buildProbPrintPage(emp, info, period, sigs) {
   const opinion = (ev, vd) => {
     if (!ev) return `<span class="na">미제출</span>`;
     const parts = [`<b>전환 의견: ${esc(vd.verdict || "-")}</b>`];
-    if (vd.reason) parts.push(`(사유) ${esc(vd.reason)}`);
+    if (vd.reason) parts.push(esc(vd.reason));
     if (ev.comment && String(ev.comment).trim()) parts.push(esc(String(ev.comment).trim()));
     return parts.join("<br>");
   };
@@ -8232,8 +8232,8 @@ function buildProbPrintPage(emp, info, period, sigs) {
   </div>
   <div class="sec">2. 평가자 의견</div>
   <table class="op">
-    <tr><th>1차 평가자<br><span class="p1">${who(info.r1)}</span></th><td>${opinion(e1, sm.v1)}</td></tr>
-    <tr><th>2차 평가자<br><span class="p2">${who(info.r2)}</span></th><td>${opinion(e2, sm.v2)}</td></tr>
+    <tr><th><span class="lb1">1차 평가자</span><br><span class="nm">${who(info.r1)}</span></th><td>${opinion(e1, sm.v1)}</td></tr>
+    <tr><th><span class="lb2">2차 평가자</span><br><span class="nm">${who(info.r2)}</span></th><td>${opinion(e2, sm.v2)}</td></tr>
   </table>
   <div class="sign">${signer("1차 평가자", info.r1, e1)}${signer("2차 평가자", info.r2, e2)}</div>
   <div class="foot">한양전공 인사평가 시스템 출력 · ${esc(probPrintDate(new Date().toISOString()))}</div>
