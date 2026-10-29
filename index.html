@@ -3763,7 +3763,8 @@ function renderProbList() {
       <td style="text-align:center;font-weight:800">${sm.avg !== null ? fmtScore(sm.avg) : "-"}</td>
       <td style="text-align:center">${sm.finalVerdict
         ? `<span class="chip" style="background:${probVerdictColor(sm.finalVerdict)}1a;color:${probVerdictColor(sm.finalVerdict)};font-weight:800">${esc(sm.finalVerdict)}</span>`
-        : `<span class="mini muted">1·2차 완료 후 산출</span>`}</td>
+        : `<span class="mini muted">1·2차 완료 후 산출</span>`}
+        ${admin ? `<div style="margin-top:4px"><button class="small secondary" onclick="openProbPrint('${esc(t.emp.dept)}','${esc(t.emp.name)}')">🖨 결과표</button></div>` : ``}</td>
     </tr>`;
   }).join("");
 
@@ -4886,6 +4887,7 @@ function renderAdminProbation(body) {
         ? `<span class="chip" style="background:${probVerdictColor(sm.finalVerdict)}1a;color:${probVerdictColor(sm.finalVerdict)};font-weight:800">${esc(sm.finalVerdict)}</span>`
         : `<span class="mini muted">진행중</span>`}</td>
       <td style="text-align:right;white-space:nowrap">
+        <button class="small" onclick="openProbPrint('${esc(t.emp.dept)}','${esc(t.emp.name)}')" title="정규직 전환 인사품의 첨부용 결과표 (A4 세로)">🖨 결과표</button>
         <button class="small secondary" onclick="probEdit('${esc(t.emp.dept)}','${esc(t.emp.name)}')">수정</button>
         <button class="small danger" onclick="probRemove('${esc(t.emp.dept)}','${esc(t.emp.name)}')">해제</button>
       </td>
@@ -8102,6 +8104,175 @@ function openReportDept(sel) {
 function openReportPerson(dept, name) {
   openReport({ scope: "person", dept, empName: name, title: `인사평가 개인 결과 보고서 — ${name}` });
 }
+
+/* ===== 수습평가 결과표 출력 (정규직 전환 인사품의 첨부용 · A4 세로 1장) ===== */
+const PROB_PRINT_CSS = `
+@page { size: A4 portrait; margin: 0 }
+*{box-sizing:border-box}
+body{margin:0;background:#e5e7eb;font-family:"Malgun Gothic","Apple SD Gothic Neo",sans-serif;color:#111;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.bar{position:sticky;top:0;background:#1e293b;color:#fff;padding:8px 16px;font-size:13px;display:flex;gap:10px;align-items:center;z-index:2}
+.bar button{margin-left:auto;padding:6px 14px;border:0;border-radius:6px;background:#3b82f6;color:#fff;font-weight:700;cursor:pointer}
+.page{width:210mm;height:297mm;margin:16px auto;background:#fff;padding:12mm 13mm 10mm;box-shadow:0 2px 10px rgba(0,0,0,.15);display:flex;flex-direction:column;overflow:hidden;page-break-after:always}
+h1{font-size:24px;text-align:center;margin:0 0 2px;letter-spacing:6px}
+.sub{text-align:center;font-size:10.5px;color:#555;margin-bottom:9px}
+table{width:100%;border-collapse:collapse}
+td,th{border:1px solid #333;font-size:11.3px;padding:4.2px 5px;vertical-align:middle}
+th{background:#eef2f7;font-weight:700}
+.info th{width:13%}.info td{width:20%}
+.sec{font-size:11.5px;font-weight:700;margin:9px 0 4px}
+.ev th{text-align:center}.ev td.c{text-align:center;white-space:nowrap}
+.ev td.area{text-align:center;font-weight:700;background:#f8fafc;width:13%}
+.ev td.item{text-align:center;width:11%}
+.g{font-weight:700}.p1{color:#1d4ed8}.p2{color:#c2410c}.na{color:#94a3b8}
+.sum td{background:#f1f5f9;font-weight:700}
+.tot td{background:#e2e8f0;font-weight:700;font-size:11.5px}
+.verdict{display:flex;border:1.5px solid #111;margin-top:9px}
+.verdict .l{background:#eef2f7;padding:8px 10px;font-weight:700;font-size:11.5px;border-right:1px solid #333;display:flex;align-items:center;width:23%}
+.verdict .r{padding:7px 12px;font-size:11.5px;flex:1}
+.chk{display:inline-block;margin-right:16px}.chk b{font-size:13px}
+.note{font-size:9px;color:#555;margin-top:3px}
+.op td{font-size:11.3px;vertical-align:top;height:58px;line-height:1.5;white-space:pre-wrap}
+.op th{width:13%;text-align:center}
+.sign{margin-top:auto;display:flex;justify-content:flex-end;gap:28px;font-size:11px;padding-top:10px;align-items:flex-end}
+.sign .who{display:inline-flex;align-items:flex-end;min-width:170px;border-bottom:1px solid #111;padding:0 2px 3px;gap:6px;position:relative;height:44px}
+.sign .who .nm{padding-bottom:2px}
+.sign .who img{height:40px;max-width:110px;object-fit:contain;position:absolute;right:14px;bottom:2px}
+.sign .who .in{margin-left:auto;padding-bottom:2px;color:#666}
+.foot{text-align:right;font-size:9px;color:#666;margin-top:6px}
+@media print{body{background:#fff}.bar{display:none}.page{margin:0;box-shadow:none}}
+`;
+function probGradeOf(v, pts, ratios) {
+  if (v == null || v === "" || !pts) return "";
+  const r = Number(v) / pts;
+  let best = 0, diff = 9;
+  (ratios || [1, 0.8, 0.6, 0.4, 0.2]).forEach((x, i) => { const d = Math.abs(x - r); if (d < diff) { diff = d; best = i; } });
+  return "ABCDE"[best];
+}
+function probPrintDate(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return probFmtDate(iso);
+  return `${d.getFullYear()}. ${d.getMonth() + 1}. ${d.getDate()}.`;
+}
+function probMonths(a, b) {
+  const s = probParseDate(a), e = probParseDate(b);
+  if (!s || !e) return "";
+  const m = Math.round(((e - s) / 86400000 + 1) / 30.4);
+  return m > 0 ? ` (${m}개월)` : "";
+}
+function buildProbPrintPage(emp, info, period, sigs) {
+  const sm = probSummary(emp, period);
+  const form = getFormForContext(period, emp, PROB_R1);
+  const ratios = form.gradeRatios || [1, 0.8, 0.6, 0.4, 0.2];
+  const e1 = isEvalSubmitted(sm.e1) ? sm.e1 : null, e2 = isEvalSubmitted(sm.e2) ? sm.e2 : null;
+  const cell = (ev, key, pts, cls) => {
+    if (!ev) return `<td class="c na">-</td>`;
+    const v = ev.scores ? ev.scores[key] : null;
+    if (v == null) return `<td class="c na">-</td>`;
+    return `<td class="c"><span class="g ${cls}">${probGradeOf(v, pts, ratios)}</span> ${fmtScore(v)}</td>`;
+  };
+  let rows = `<tr><th>영역</th><th>평가항목</th><th>세부 평가 문항</th><th style="width:6%">배점</th><th style="width:9%" class="p1">1차</th><th style="width:9%" class="p2">2차</th></tr>`;
+  let T = 0;
+  (form.areas || []).forEach(a => {
+    const items = a.items || [];
+    const nRows = items.reduce((n, it) => n + ((it.subItems && it.subItems.length) || 1), 0);
+    let first = true, aMax = 0, s1 = null, s2 = null;
+    items.forEach(it => {
+      const subs = (it.subItems && it.subItems.length) ? it.subItems : [{ name: it.name, points: itemMaxPoints(it) }];
+      subs.forEach((q, qi) => {
+        const key = (it.subItems && it.subItems.length) ? `${it.id}#${qi}` : it.id;
+        const pts = Number(q.points) || 0; aMax += pts;
+        [[e1, v => s1 = (s1 || 0) + v], [e2, v => s2 = (s2 || 0) + v]].forEach(([ev, add]) => {
+          const v = ev && ev.scores ? ev.scores[key] : null; if (v != null) add(Number(v) || 0);
+        });
+        rows += `<tr>${first ? `<td class="area" rowspan="${nRows}">${esc(String(a.area || "").replace(/\(.*\)$/, ""))}${/\(.*\)$/.test(a.area || "") ? `<br><span style="font-weight:400">${esc(a.area.match(/\(.*\)$/)[0])}</span>` : ""}</td>` : ""}`
+          + `${qi === 0 ? `<td class="item" rowspan="${subs.length}">${esc(it.name)}</td>` : ""}`
+          + `<td>${esc(q.name)}</td><td class="c">${fmtScore(pts)}</td>${cell(e1, key, pts, "p1")}${cell(e2, key, pts, "p2")}</tr>`;
+        first = false;
+      });
+    });
+    T += aMax;
+    rows += `<tr class="sum"><td colspan="3" style="text-align:right">${esc(String(a.area || "").replace(/\(.*\)$/, ""))} 소계</td><td class="c">${fmtScore(aMax)}</td><td class="c p1">${s1 == null ? "-" : fmtScore(s1)}</td><td class="c p2">${s2 == null ? "-" : fmtScore(s2)}</td></tr>`;
+  });
+  rows += `<tr class="tot"><td colspan="3" style="text-align:right">합 계</td><td class="c">${fmtScore(T)}</td><td class="c p1">${e1 ? fmtScore(e1.total) : "미제출"}</td><td class="c p2">${e2 ? fmtScore(e2.total) : "미제출"}</td></tr>`;
+
+  const fv = sm.finalVerdict;
+  const box = v => `<span class="chk"><b>${fv === v ? "■" : "□"}</b> ${esc(v)}</span>`;
+  const who = r => r ? esc(r.name + (r.title ? " " + r.title : "")) : "미지정";
+  const opinion = (ev, vd) => {
+    if (!ev) return `<span class="na">미제출</span>`;
+    const parts = [`<b>전환 의견: ${esc(vd.verdict || "-")}</b>`];
+    if (vd.reason) parts.push(`(사유) ${esc(vd.reason)}`);
+    if (ev.comment && String(ev.comment).trim()) parts.push(esc(String(ev.comment).trim()));
+    return parts.join("<br>");
+  };
+  const doneAt = [e1, e2].filter(Boolean).map(e => e.submittedAt).sort().pop();
+  const sigImg = (r, ev) => {
+    const u = r && ev && sigs ? sigs[r.name] : "";
+    return u ? `<img src="${u}" alt="">` : "";
+  };
+  const signer = (label, r, ev) => `<div>${label} &nbsp;<span class="who"><span class="nm">${r ? esc(r.name) : ""}</span>${sigImg(r, ev)}<span class="in">(인)</span></span></div>`;
+  return `<div class="page">
+  <h1>수습기간 평가 결과표</h1>
+  <div class="sub">한양전공(주) · 정규직 전환 심사용</div>
+  <table class="info">
+    <tr><th>소 속</th><td>${esc(emp.dept)}</td><th>성 명</th><td>${esc(emp.name)}</td><th>직 위</th><td>${esc(emp.rank || "")}</td></tr>
+    <tr><th>입 사 일</th><td>${esc(probFmtDate(info.joinedAt))}</td><th>수습기간</th><td colspan="3">${esc(probFmtDate(info.joinedAt))} ~ ${esc(probFmtDate(info.endAt))}${esc(probMonths(info.joinedAt, info.endAt))}</td></tr>
+    <tr><th>1차 평가자</th><td>${who(info.r1)}</td><th>2차 평가자</th><td>${who(info.r2)}</td><th>평가 완료일</th><td>${sm.done ? esc(probPrintDate(doneAt)) : "진행 중"}</td></tr>
+  </table>
+  <div class="sec">1. 평가 내용 <span style="font-weight:400;font-size:9.5px;color:#555">(A 매우우수 · B 우수 · C 보통 · D 미흡 · E 매우미흡 / 문항 배점 × 100·80·60·40·20%)</span></div>
+  <table class="ev">${rows}</table>
+  <div class="verdict">
+    <div class="l">정규직 전환 판정</div>
+    <div class="r">
+      1·2차 평균 <b>${sm.done ? fmtScore(sm.avg) : "-"}</b>점 &nbsp;→&nbsp; ${box("적합")}${box("조건부(수습 연장)")}${box("부적합")}
+      ${sm.done ? "" : `<b style="color:#dc2626">· 1·2차 평가 완료 후 판정</b>`}
+      <div class="note">판정 기준: 적합 80점 이상 / 조건부(수습 연장) 60~79점 / 부적합 60점 미만</div>
+    </div>
+  </div>
+  <div class="sec">2. 평가자 의견</div>
+  <table class="op">
+    <tr><th>1차 평가자<br><span class="p1">${who(info.r1)}</span></th><td>${opinion(e1, sm.v1)}</td></tr>
+    <tr><th>2차 평가자<br><span class="p2">${who(info.r2)}</span></th><td>${opinion(e2, sm.v2)}</td></tr>
+  </table>
+  <div class="sign">${signer("1차 평가자", info.r1, e1)}${signer("2차 평가자", info.r2, e2)}</div>
+  <div class="foot">한양전공 인사평가 시스템 출력 · ${esc(probPrintDate(new Date().toISOString()))}</div>
+</div>`;
+}
+// 전자서명 시스템의 최근 서명 이미지 (관리자 전용 · 서버 action "signature")
+async function fetchProbSignatures(people) {
+  const list = people.filter(Boolean).map(r => ({ name: r.name }));
+  if (!list.length || !IS_REMOTE()) return { sigs: {}, err: "" };
+  try {
+    const r = await remotePostRaw("signature", { people: list });
+    if (r && r.ok) return { sigs: r.sigs || {}, err: "" };
+    if (r && isUnknownAction(r.error)) return { sigs: {}, err: "서버에 서명 연동 기능이 아직 배포되지 않았습니다." };
+    return { sigs: {}, err: (r && r.error) || "서명 이미지를 불러오지 못했습니다." };
+  } catch (e) { return { sigs: {}, err: "서명 이미지를 불러오지 못했습니다." }; }
+}
+async function openProbPrint(dept, name) {
+  if (!isAdminUser()) { alert("수습평가 결과표 출력은 관리자만 할 수 있습니다."); return; }
+  const emp = EMPLOYEES.find(e => e.dept === dept && e.name === name);
+  const info = emp ? getProbationInfo(emp) : null;
+  if (!emp || !info) { alert("수습평가 대상자 정보를 찾을 수 없습니다."); return; }
+  const w = window.open("", "_blank");
+  if (!w) { alert("팝업이 차단되었습니다. 브라우저 주소창의 팝업 차단을 해제한 뒤 다시 시도해 주세요."); return; }
+  w.document.write(`<p style="font-family:sans-serif;padding:24px">결과표를 만드는 중입니다… (서명 이미지 불러오는 중)</p>`);
+  const period = getActivePeriod() || resolveEvalPeriod();
+  const { sigs, err } = await fetchProbSignatures([info.r1, info.r2]);
+  let html;
+  try { html = buildProbPrintPage(emp, info, period, sigs); }
+  catch (e) { w.document.body.innerHTML = `<p style="font-family:sans-serif;padding:24px;color:#dc2626">결과표 생성 중 오류: ${esc(e.message)}</p>`; return; }
+  const missing = [info.r1, info.r2].filter(r => r && !sigs[r.name]).map(r => r.name);
+  const hint = err ? `⚠ ${esc(err)}` : (missing.length ? `⚠ 전자서명 기록 없음: ${esc(missing.join(", "))}` : `서명 이미지: 전자서명 시스템 최근 서명`);
+  w.document.open();
+  w.document.write(`<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"/>
+<title>수습평가 결과표 — ${esc(emp.name)}</title><style>${PROB_PRINT_CSS}</style></head><body>
+<div class="bar">수습평가 결과표 · ${esc(emp.dept)} ${esc(emp.name)} · A4 세로 · ${hint}<button onclick="window.print()">🖨 인쇄 / PDF 저장</button></div>
+${html}</body></html>`);
+  w.document.close();
+}
+window.openProbPrint = openProbPrint;
 
 window.openResultDetail = openResultDetail;
 window.closeResultDetail = closeResultDetail;
