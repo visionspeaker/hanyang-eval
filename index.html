@@ -3756,7 +3756,7 @@ function renderProbList() {
       <td class="mini">${esc(probFmtDate(t.info.joinedAt))}</td>
       <td class="mini">${esc(probFmtDate(t.info.endAt))}</td>
       <td class="mini" style="white-space:nowrap">${esc(probFmtDate(t.info.dueAt))}
-        ${d === null ? "" : (d < 0 ? `<br><span style="color:var(--danger);font-weight:700">마감 ${-d}일 경과</span>`
+        ${sm.done ? `<br><span style="color:#059669;font-weight:700">평가 완료</span>` : d === null ? "" : (d < 0 ? `<br><span style="color:var(--danger);font-weight:700">마감 ${-d}일 경과</span>`
                                    : `<br><span style="color:${d <= 3 ? "var(--danger)" : "var(--muted)"};font-weight:700">D-${d}</span>`)}</td>
       ${cell(PROB_R1, sm.s1, sm.draft1, sm.v1)}
       ${cell(PROB_R2, sm.s2, sm.draft2, sm.v2)}
@@ -4878,7 +4878,7 @@ function renderAdminProbation(body) {
       <td class="mini">${esc(probFmtDate(t.info.joinedAt))}</td>
       <td class="mini">${esc(probFmtDate(t.info.endAt))}</td>
       <td class="mini" style="white-space:nowrap">${esc(probFmtDate(t.info.dueAt))}
-        ${d === null ? "" : (d < 0 ? ` <span style="color:var(--danger);font-weight:700">(${-d}일 경과)</span>`
+        ${sm.done ? ` <span style="color:#059669;font-weight:700">(평가 완료)</span>` : d === null ? "" : (d < 0 ? ` <span style="color:var(--danger);font-weight:700">(${-d}일 경과)</span>`
                                    : ` <span style="color:${d <= 3 ? "var(--danger)" : "var(--muted)"};font-weight:700">(D-${d})</span>`)}</td>
       <td class="mini">${who(t.info.r1)}<br>${sm.s1 !== null ? `<b>${fmtScore(sm.s1)}</b> <span style="color:${probVerdictColor(sm.v1.verdict)}">${esc(sm.v1.verdict)}</span>` : (sm.draft1 ? `<span class="chip draft" style="font-size:10px">임시저장</span>` : `<span class="muted">미제출</span>`)}</td>
       <td class="mini">${who(t.info.r2)}<br>${sm.s2 !== null ? `<b>${fmtScore(sm.s2)}</b> <span style="color:${probVerdictColor(sm.v2.verdict)}">${esc(sm.v2.verdict)}</span>` : (sm.draft2 ? `<span class="chip draft" style="font-size:10px">임시저장</span>` : `<span class="muted">미제출</span>`)}</td>
