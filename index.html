@@ -8211,7 +8211,7 @@ function buildProbPrintPage(emp, info, period, sigs) {
     const u = r && ev && sigs ? sigs[r.name] : "";
     return u ? `<img src="${u}" alt="">` : "";
   };
-  const signer = (label, r, ev) => `<div>${label} &nbsp;<span class="who"><span class="nm">${r ? esc(r.name) : ""}</span>${sigImg(r, ev)}<span class="in">(인)</span></span></div>`;
+  const signer = (label, r, ev) => `<div>${label} &nbsp;<span class="who"><span class="nm">${r ? esc(r.name) : ""}</span>${sigImg(r, ev)}<span class="in">(서명)</span></span></div>`;
   return `<div class="page">
   <h1>수습기간 평가 결과표</h1>
   <div class="sub">한양전공(주) · 정규직 전환 심사용</div>
