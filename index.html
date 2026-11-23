@@ -8113,6 +8113,7 @@ body{margin:0;background:#e5e7eb;font-family:"Malgun Gothic","Apple SD Gothic Ne
 .bar{position:sticky;top:0;background:#1e293b;color:#fff;padding:8px 16px;font-size:13px;display:flex;gap:10px;align-items:center;z-index:2}
 .bar button{margin-left:auto;padding:6px 14px;border:0;border-radius:6px;background:#3b82f6;color:#fff;font-weight:700;cursor:pointer}
 .page{width:210mm;height:297mm;margin:16px auto;background:#fff;padding:12mm 13mm 10mm;box-shadow:0 2px 10px rgba(0,0,0,.15);display:flex;flex-direction:column;overflow:hidden;page-break-after:always}
+.sheet{display:flex;flex-direction:column;flex:1 0 auto;width:100%;min-height:100%}
 h1{font-size:24px;text-align:center;margin:0 0 2px;letter-spacing:6px}
 .sub{text-align:center;font-size:10.5px;color:#555;margin-bottom:9px}
 table{width:100%;border-collapse:collapse}
@@ -8140,6 +8141,147 @@ th{background:#eef2f7;font-weight:700}
 .sign .who .in{margin-left:auto;padding-bottom:2px;color:#666}
 .foot{text-align:right;font-size:9px;color:#666;margin-top:6px}
 @media print{body{background:#fff}.bar{display:none}.page{margin:0;box-shadow:none}}
+`;
+// 결과표는 A4 세로 1장이다. .page 가 height:297mm; overflow:hidden 이라
+// 의견이 길면 서명·바닥글이 잘린다. 넘칠 때만 글자 크기·줄간격을 줄여 한 장에 맞춘다.
+// 짧은 의견은 인라인 스타일을 넣지 않아 기존 모습 그대로 둔다.
+function fitProbSheet() {
+  var page = document.querySelector(".page");
+  if (!page) return;
+  var foot = page.querySelector(".foot");
+  var sheet = page.querySelector(".sheet");
+  var opCells = [].slice.call(page.querySelectorAll("table.op td"));
+  if (!foot || !opCells.length) return;
+  var tightenEls = [].slice.call(page.querySelectorAll("table.ev td, table.ev th, table.info td, table.info th"));
+  var secs = [].slice.call(page.querySelectorAll(".sec"));
+  var verdict = page.querySelector(".verdict");
+  var sub = page.querySelector(".sub");
+  var OP_MAX = 11.3, OP_MIN = 6.5;
+
+  function overflowPx() {
+    var rect = page.getBoundingClientRect();
+    var pad = parseFloat(window.getComputedStyle(page).paddingBottom) || 0;
+    var pastContent = foot.getBoundingClientRect().bottom - (rect.bottom - pad);
+    var pastEdge = foot.getBoundingClientRect().bottom - (rect.bottom - 1);
+    var imgs = page.querySelectorAll(".sign img");
+    for (var i = 0; i < imgs.length; i++) {
+      pastEdge = Math.max(pastEdge, imgs[i].getBoundingClientRect().bottom - (rect.bottom - 1));
+    }
+    return Math.max(pastContent, pastEdge);
+  }
+  function clearFitStyles() {
+    opCells.forEach(function (td) { td.style.fontSize = ""; td.style.lineHeight = ""; });
+    tightenEls.forEach(function (el) {
+      el.style.paddingTop = ""; el.style.paddingBottom = "";
+      el.style.fontSize = ""; el.style.lineHeight = "";
+    });
+    secs.forEach(function (el) { el.style.marginTop = ""; el.style.marginBottom = ""; });
+    if (verdict) {
+      verdict.style.marginTop = "";
+      var vr = verdict.querySelector(".r"), vl = verdict.querySelector(".l");
+      if (vr) vr.style.fontSize = "";
+      if (vl) vl.style.fontSize = "";
+    }
+    if (sub) sub.style.marginBottom = "";
+    var h1 = page.querySelector("h1");
+    if (h1) h1.style.fontSize = "";
+    if (sheet) { sheet.style.zoom = ""; sheet.style.width = ""; }
+  }
+  function lhFor(fs) {
+    var t = (fs - OP_MIN) / (OP_MAX - OP_MIN);
+    if (t < 0) t = 0;
+    if (t > 1) t = 1;
+    return Math.round((1.15 + t * 0.35) * 100) / 100;
+  }
+  function applyOpinion(fs) {
+    var lh = lhFor(fs);
+    opCells.forEach(function (td) {
+      td.style.fontSize = fs.toFixed(2) + "px";
+      td.style.lineHeight = String(lh);
+    });
+  }
+  function applyTighten(t) {
+    var pad = 4.2 - t * 3.2;
+    tightenEls.forEach(function (el) {
+      el.style.paddingTop = pad.toFixed(2) + "px";
+      el.style.paddingBottom = pad.toFixed(2) + "px";
+    });
+    secs.forEach(function (el) {
+      el.style.marginTop = (9 - t * 6).toFixed(2) + "px";
+      el.style.marginBottom = (4 - t * 3).toFixed(2) + "px";
+    });
+    if (verdict) verdict.style.marginTop = (9 - t * 6).toFixed(2) + "px";
+    if (sub) sub.style.marginBottom = (9 - t * 5).toFixed(2) + "px";
+  }
+  function applyDeep(t) {
+    applyOpinion(OP_MIN - t * 1.5);
+    var tfs = 11.3 - t * 2.6;
+    tightenEls.forEach(function (el) {
+      el.style.fontSize = tfs.toFixed(2) + "px";
+      el.style.lineHeight = "1.2";
+    });
+    var h1 = page.querySelector("h1");
+    if (h1) h1.style.fontSize = (24 - t * 4).toFixed(2) + "px";
+    if (verdict) {
+      var vr = verdict.querySelector(".r"), vl = verdict.querySelector(".l");
+      if (vr) vr.style.fontSize = (11.5 - t * 1.5).toFixed(2) + "px";
+      if (vl) vl.style.fontSize = (11.5 - t * 1.5).toFixed(2) + "px";
+    }
+  }
+  function applyZoom(z) {
+    if (!sheet) return;
+    // 가로를 다시 늘리면 페이지 오른쪽이 잘린다. 마지막 단계에서는 여백이 남아도 전체가 보이게만 한다.
+    sheet.style.zoom = String(z);
+  }
+  function mark(mode, font) {
+    page.dataset.fit = mode;
+    page.dataset.fitFont = font;
+  }
+
+  clearFitStyles();
+  if (overflowPx() <= 1) {
+    mark("unchanged", window.getComputedStyle(opCells[0]).fontSize);
+    return;
+  }
+  // 1) 의견란만 줄인다. 가장 큰 글자 크기부터 내려가 처음 맞는 값을 쓴다.
+  var font = null;
+  for (var cent = 1125; cent >= 650; cent -= 5) {
+    applyOpinion(cent / 100);
+    if (overflowPx() <= 1) { font = cent / 100; break; }
+  }
+  if (font != null) { mark("shrunk", font.toFixed(2)); return; }
+  applyOpinion(OP_MIN);
+
+  // 2) 의견 글자를 더 줄일 수 없으면 표 여백·구간 간격만 줄여 자리를 만든다.
+  var tight = null;
+  for (var ti = 1; ti <= 12; ti++) {
+    applyTighten(Math.min(1, ti / 12));
+    if (overflowPx() <= 1) { tight = ti / 12; break; }
+  }
+  if (tight != null) { mark("shrunk", OP_MIN.toFixed(2)); return; }
+
+  // 3) 그래도 넘치면 표·제목 글자까지 한 단계씩 줄인다.
+  var deep = null;
+  for (var di = 1; di <= 10; di++) {
+    applyDeep(di / 10);
+    if (overflowPx() <= 1) { deep = di / 10; break; }
+  }
+  if (deep != null) { mark("shrunk", window.getComputedStyle(opCells[0]).fontSize); return; }
+
+  // 4) 마지막에는 본문 전체를 축소해 서명과 바닥글이 페이지 안에 남게 한다.
+  var zoom = null;
+  for (var zi = 97; zi >= 55; zi -= 3) {
+    applyZoom(zi / 100);
+    if (overflowPx() <= 1) { zoom = zi / 100; break; }
+  }
+  if (zoom == null) applyZoom(0.55);
+  mark(overflowPx() <= 1 ? "shrunk" : "clipped", window.getComputedStyle(opCells[0]).fontSize);
+}
+const PROB_FIT_JS = fitProbSheet.toString() + `
+if (document.readyState === "complete") fitProbSheet();
+else window.addEventListener("load", fitProbSheet);
+document.addEventListener("DOMContentLoaded", fitProbSheet);
+window.addEventListener("beforeprint", fitProbSheet);
 `;
 function probGradeOf(v, pts, ratios) {
   if (v == null || v === "" || !pts) return "";
@@ -8212,7 +8354,7 @@ function buildProbPrintPage(emp, info, period, sigs) {
     return u ? `<img src="${u}" alt="">` : "";
   };
   const signer = (label, r, ev) => `<div>${label} &nbsp;<span class="who"><span class="nm">${r ? esc(r.name) : ""}</span>${sigImg(r, ev)}<span class="in">(서명)</span></span></div>`;
-  return `<div class="page">
+  return `<div class="page"><div class="sheet">
   <h1>수습기간 평가 결과표</h1>
   <div class="sub">한양전공(주) · 정규직 전환 심사용</div>
   <table class="info">
@@ -8237,7 +8379,7 @@ function buildProbPrintPage(emp, info, period, sigs) {
   </table>
   <div class="sign">${signer("1차 평가자", info.r1, e1)}${signer("2차 평가자", info.r2, e2)}</div>
   <div class="foot">한양전공 인사평가 시스템 출력 · ${esc(probPrintDate(new Date().toISOString()))}</div>
-</div>`;
+</div></div>`;
 }
 // 전자서명 시스템의 최근 서명 이미지 (관리자 전용 · 서버 action "signature")
 async function fetchProbSignatures(people) {
@@ -8269,7 +8411,8 @@ async function openProbPrint(dept, name) {
   w.document.write(`<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"/>
 <title>수습평가 결과표 — ${esc(emp.name)}</title><style>${PROB_PRINT_CSS}</style></head><body>
 <div class="bar">수습평가 결과표 · ${esc(emp.dept)} ${esc(emp.name)} · A4 세로 · ${hint}<button onclick="window.print()">🖨 인쇄 / PDF 저장</button></div>
-${html}</body></html>`);
+${html}
+<script>${PROB_FIT_JS}<\/script></body></html>`);
   w.document.close();
 }
 window.openProbPrint = openProbPrint;
